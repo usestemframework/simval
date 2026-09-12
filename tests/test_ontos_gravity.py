@@ -1559,6 +1559,93 @@ def test_coarsehit_stream_lands_static_contacts():
     assert summary["contact_min_jn"] > 0.0
 
 
+def test_static_contact_fires_when_coarse_body_has_smaller_id():
+    # OTO-016 mirror (ontos seed-117 regression): section 24 static
+    # contact is positional — the sweep must reach a fine body resolving
+    # against an ephemeris-coarse contactant even when the coarse body
+    # carries the smaller id. Body 1 sits in region 2 and is demoted at
+    # tick 1; fine body 3 outside the box overlaps the sum of radii
+    # inbound. The old sweep skipped the pair (the outer index had to
+    # be fine), letting body 3 fall through the frozen body.
+    def setup(contacts):
+        w = GravityWorld(117, 4)
+        w.bodies[0]["mass"] = 0.5
+        w.bodies[0]["x"] = 16.0
+        w.bodies[0]["y"] = 16.0
+        w.bodies[0]["vx"] = 0.0
+        w.bodies[0]["vy"] = 0.0
+        w.bodies[1]["mass"] = 2.0
+        w.bodies[1]["x"] = 32.0
+        w.bodies[1]["y"] = 65.0
+        w.bodies[1]["vx"] = 0.0
+        w.bodies[1]["vy"] = 0.0
+        w.bodies[2]["mass"] = 0.5
+        w.bodies[2]["x"] = 112.0
+        w.bodies[2]["y"] = 16.0
+        w.bodies[2]["vx"] = 0.0
+        w.bodies[2]["vy"] = 0.0
+        w.bodies[3]["mass"] = 2.0
+        w.bodies[3]["x"] = 32.0
+        w.bodies[3]["y"] = 63.0
+        w.bodies[3]["vx"] = 0.0
+        w.bodies[3]["vy"] = 0.25
+        w.contacts = contacts
+        w.contact_params = contacts
+        w.schedule(1, 2, 0)
+        return w
+
+    def same_bits(a, b):
+        return struct.pack("<d", a) == struct.pack("<d", b)
+
+    def same_fit(a, b):
+        if a is None or b is None:
+            return False
+        if a["t0"] != b["t0"]:
+            return False
+        for ca, cb in zip(a["c"], b["c"]):
+            if not all(same_bits(u, v) for u, v in zip(ca, cb)):
+                return False
+        return True
+
+    ctl = setup(False)
+    w = setup(True)
+    ctl.step()
+    w.step()
+    assert len(ctl.last_contacts) == 0
+    assert len(w.last_contacts) == 1, "the (coarse 1, fine 3) pair fires"
+    c = w.last_contacts[0]
+    assert (c["a"], c["b"]) == (1, 3), "record ids in pinned (min, max) order"
+    assert c["static_pair"] is True
+    assert c["jn"] > 0.0
+    assert abs(c["vn_after"]) < 1e-12, f"e = 0 closure, vn_after {c['vn_after']}"
+    assert (1, 3) in w.touching
+    assert same_fit(w.coarse[1], ctl.coarse[1]), "fit identical to the no-contact run"
+    # Body 3 receives exactly the one-sided impulse: its pre-impulse
+    # state is the control run's (identical history up to the pass).
+    s1 = w._state_at(1, 1)
+    p3 = ctl.bodies[3]
+    dx = s1["x"] - p3["x"]
+    dy = s1["y"] - p3["y"]
+    dist = math.sqrt(dx * dx + dy * dy)
+    nx = dx / dist
+    ny = dy / dist
+    vrx = s1["vx"] - p3["vx"]
+    vry = s1["vy"] - p3["vy"]
+    vn = vrx * nx + vry * ny
+    s = (1.0 + w.restitution) * vn
+    m3 = w.bodies[3]["mass"]
+    assert same_bits(w.bodies[3]["vx"], p3["vx"] + s * nx), "body 3 vx changed by s * nx"
+    assert same_bits(w.bodies[3]["vy"], p3["vy"] + s * ny), "body 3 vy changed by s * ny"
+    # The ledger books exactly the one-sided impulse (the fc-kick
+    # bookings of the demoted body are shared with the control run).
+    assert same_bits(w.px, ctl.px + m3 * (s * nx)), "ledger px books the static impulse"
+    assert same_bits(w.py, ctl.py + m3 * (s * ny)), "ledger py books the static impulse"
+    frozen_fit = {"t0": w.coarse[1]["t0"], "c": [list(c) for c in w.coarse[1]["c"]]}
+    for _ in range(8):
+        w.step()
+    assert same_fit(w.coarse[1], frozen_fit), "fit stays frozen"
+
+
 def test_test_ic_profiles_match_spec_ic_masses():
     from simval.ontos_gravity import initial_conditions, test_initial_conditions
 

@@ -70,10 +70,12 @@ def test_initial_conditions(profile: str, seed: int, count: int) -> list:
     coverage). wallshot: body i targets wall i % 4, starting near it and
     inbound at 2..5. coarsehit (count 8): bodies 0..3 are interceptors
     outside the region-3 box aimed at a slow target cluster (bodies
-    4..7) over shared y lanes; the fine body must carry the smaller id
-    because the section 21/24 sweep is lexicographic with the fine
-    body as the outer index. Same five SplitMix64 draws per body as
-    initial_conditions, so masses match the spec ICs of the same seed.
+    4..7) over shared y lanes. Interceptors carry the smaller ids so
+    the corpus exercises the fine-low static arm (fine i, coarse j) of
+    the section 24 sweep; the reversed id order (coarse contactant
+    below the fine body) is pinned by unit regression instead. Same
+    five SplitMix64 draws per body as initial_conditions, so masses
+    match the spec ICs of the same seed.
     """
     rng = SplitMix64(seed)
     bodies = []
@@ -930,18 +932,33 @@ class GravityWorld:
         n = len(self.bodies)
         nxt = set()
         events = []
+        # Section 24: the sweep visits every unordered real-body pair
+        # once in pinned (i, j) id order and dispatches on membership —
+        # a fine body resolving against an ephemeris-coarse contactant
+        # is reachable whichever member carries the smaller id. Only
+        # (fine, fine), (fine, coarse), and — with the section 24
+        # record — (coarse, fine) pairs proceed; collapsed members
+        # never contact individually (their region contacts as a
+        # monopole), coarse-coarse pairs have no movable member, and
+        # without the record non-fine bodies never contact (section 21).
         for i in range(n):
-            if frozen[i]:
-                continue
             for j in range(i + 1, n):
-                if self.body_collapsed[j] is not None:
+                if frozen[j]:
+                    if frozen[i] or self.body_collapsed[j] is not None:
+                        continue
+                elif frozen[i] and not (extended and self.coarse[i] is not None):
                     continue
-                coarse_j = self.coarse[j] is not None
-                if coarse_j and not extended:
-                    continue
-                sj = self._state_at(j, entering)
-                dx = sj["x"] - self.bodies[i]["x"]
-                dy = sj["y"] - self.bodies[i]["y"]
+                # f is the fine member; so is the other member's state
+                # at the tick (polynomial evaluation for a coarse
+                # contactant, integrated state for a fine pair). The
+                # normal points from the fine body toward the contactant.
+                if frozen[i]:
+                    f, o = j, i
+                else:
+                    f, o = i, j
+                so = self._state_at(o, entering)
+                dx = so["x"] - self.bodies[f]["x"]
+                dy = so["y"] - self.bodies[f]["y"]
                 rs = radii[i] + radii[j]
                 d2 = dx * dx + dy * dy
                 if d2 >= rs * rs:
@@ -955,16 +972,17 @@ class GravityWorld:
                     dist = math.sqrt(d2)
                     nx = dx / dist
                     ny = dy / dist
-                vrx = sj["vx"] - self.bodies[i]["vx"]
-                vry = sj["vy"] - self.bodies[i]["vy"]
+                vrx = so["vx"] - self.bodies[f]["vx"]
+                vry = so["vy"] - self.bodies[f]["vy"]
                 vn = vrx * nx + vry * ny
                 if vn >= 0.0:
                     continue
                 mi = self.bodies[i]["mass"]
                 mj = self.bodies[j]["mass"]
-                cx = (self.bodies[i]["x"] + sj["x"]) * 0.5
-                cy = (self.bodies[i]["y"] + sj["y"]) * 0.5
-                if not coarse_j:
+                cx = (self.bodies[f]["x"] + so["x"]) * 0.5
+                cy = (self.bodies[f]["y"] + so["y"]) * 0.5
+                fine_pair = not frozen[i] and not frozen[j]
+                if fine_pair:
                     inv = 1.0 / (mi + mj)
                     t = vn * inv
                     s = (1.0 + e) * t
@@ -991,22 +1009,22 @@ class GravityWorld:
                         self.bodies[j]["vx"] -= ftj * (0.0 - ny)
                         self.bodies[j]["vy"] -= ftj * nx
                 else:
-                    _, jn = self._static_impulse(i, nx, ny, vrx, vry)
+                    _, jn = self._static_impulse(f, nx, ny, vrx, vry)
                     mu = (mi * mj) / (mi + mj)
                 if suppress and pair in self.touching:
                     continue
                 # The contactant is measured at its post-impulse state for
                 # fine pairs and at its (frozen) polynomial evaluation for
                 # coarse pairs — never at the stale demote-time slot.
-                if coarse_j:
-                    vn_after = (sj["vx"] - self.bodies[i]["vx"]) * nx + (
-                        sj["vy"] - self.bodies[i]["vy"]
-                    ) * ny
-                else:
+                if fine_pair:
                     vn_after = (
                         (self.bodies[j]["vx"] - self.bodies[i]["vx"]) * nx
                         + (self.bodies[j]["vy"] - self.bodies[i]["vy"]) * ny
                     )
+                else:
+                    vn_after = (so["vx"] - self.bodies[f]["vx"]) * nx + (
+                        so["vy"] - self.bodies[f]["vy"]
+                    ) * ny
                 events.append(
                     {
                         "tick": entering,
@@ -1018,7 +1036,7 @@ class GravityWorld:
                         "vn": vn,
                         "vn_after": vn_after,
                         "mu": mu,
-                        "static_pair": coarse_j,
+                        "static_pair": not fine_pair,
                     }
                 )
         if extended:
