@@ -4,7 +4,7 @@
 > (pre-rename; kept verbatim). The verification-oracle audit register — the
 > authoritative record of oracle-hardening findings against HEAD 7495370 —
 > is §F at the bottom of this file. Batch 2 (HEAD 0bdb2d3) is §G; batch 3
-> (HEAD 74e8ee6) is §H.
+> (HEAD 74e8ee6) is §H; batch 4 (HEAD f636c8c) is §I.
 
 > Synthesis of five independent analysis passes: competitive positioning, technical architecture, risk/oversight hunt, Hive codebase audit, product/UX/scope.
 > Convergent findings (flagged by ≥2 passes) are high-confidence. The audit's own conclusion is in §D.
@@ -294,3 +294,28 @@ Golden/reference/corpus files touched in batch 3, and why:
 - `tests/test_reference_rules.py` version-gate and identity fixtures —
   renamed their synthetic cases to probe names so the GOLD-002 pin does
   not shadow the validation under test (deliberate test update).
+
+---
+
+## I. Verification-oracle audit register, batch 4 (2026-09-12)
+
+Findings verified against HEAD `f636c8c` by an external review; implemented
+in the commits below. Same posture as §F/§G/§H: simval is the trust anchor,
+every fix errs toward failing closed. Both findings are producer bugs
+mirrored into the reference: the corrected semantics live in the ontos
+clone at `usestemframework/ontos` 89afa2e (OTO-016) and edff03b (OTO-017,
+HEAD aa305ee), and the reference now tracks them. No existing corpus
+exercises the fixed orientations (all cross-checks were already
+bit-matching), so no golden/corpus bytes changed — the emitter-reproduction
+tests pin this.
+
+| ID | Severity | Area | Finding | Status |
+|---|---|---|---|---|
+| ONT-016 | P0 | ontos_gravity._contact_pass | The pair sweep skipped any non-fine outer i and only considered j > i, so a fine x ephemeris-coarse static pair with the COARSE body at the smaller id never fired its one-sided impulse — the oracle would have blessed the wrong producer behavior once new corpus cases exercised that orientation | Fixed — the sweep visits every unordered real-body pair once in pinned (i, j) order and dispatches on membership: (fine, fine) two-sided, (fine, coarse) static on i, and — with the section 24 record — (coarse, fine) a one-sided impulse on the fine body j against i's frozen polynomial state, normal pointing fine->coarse (mirrors ontos 89afa2e exactly, including the ungated (0,1) arm; the §21-only contacts+demote CI case cross-verifies bit-exact). Touching keys and Contact record ids stay (min, max) for real-body pairs per STREAM_SPEC §24; static_pair marks every one-sided pair. The coarsehit test-IC docstring drops its fine-low rationale (it was hiding the bug, not a spec choice; the reversed id order is now pinned by the mirrored seed-117 regression: record ids (1, 3), fit frozen vs a no-contact control, body 3 changed by exactly s*n, ledger booking exactly m*s*n) |
+| ONT-017 | P0 | ontos_gravity._shell_scale | The global radial scale was applied BEFORE classifying shell membership; §25 pins classify-unscaled-base-then-scale. In exact arithmetic rank survives a uniform scale, but binary64 rounding on near-ties can flip shell membership (changing mu_k solves, positions, hashes, stream bytes) | Fixed — mass-weighted mean, radii, and shell_assignment are computed from the UNSCALED section 20 base and retained; lambda is then solved/applied and the per-shell pairs gathered from the scaled displacements per step 4 (mirrors ontos edff03b). The mirrored near-tie regression pins an exact sqrt(185) radius tie that the solved lambda breaks the wrong way (asserted to fail under the old order) plus per-shell closure on the record targets |
+
+Verification: full pytest suite (392 passed), `simval diagnose` on all 20
+ontos examples (PASS, provenance byte-stable), and the complete CI
+cross-verification against the local ontos clone at aa305ee (23 distinct
+stream contracts incl. wallshot/coarsehit test-ICs + 3 modal-audio cases)
+— every stream and WAV bit-exact, zero mismatches.
