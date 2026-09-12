@@ -1196,6 +1196,99 @@ def test_shells_per_shell_binding_exact_across_seeds(tmp_path):
     assert worst < 1e-9
 
 
+def test_shells_classification_precedes_global_scale():
+    # OTO-017 mirror (ontos near-tie regression): section 25 step 2
+    # classifies the UNSCALED base before step 3 applies the global
+    # lambda. The frozen 12-member layout below (adjacent +/- pairs,
+    # unit masses, so the mass-weighted mean is exactly zero scaled and
+    # unscaled) carries an exact radius tie — members 4/5 (+/-(4,13))
+    # and 6/7 (+/-(8,11)) all sit at r = sqrt(185) — straddling the
+    # shell boundary. Unscaled, the tie resolves by id (4,5 in shell
+    # 0); under the solved lambda (bits pinned below) the scaled radii
+    # round apart with (8,11) below (4,13), so classifying after the
+    # scale would swap the pairs across the boundary. Constants were
+    # hunted once offline against ontos' pinned 128-bisection and
+    # verified at the solved lambda and its nextafter neighbors.
+    from simval.ontos_gravity import shell_assignment
+
+    w = GravityWorld(9, 12)
+    for b in w.bodies:
+        b["mass"] = 1.0
+    base = {
+        0: (1.0, 0.0),
+        1: (-1.0, 0.0),
+        2: (2.0, 1.0),
+        3: (-2.0, -1.0),
+        4: (4.0, 13.0),
+        5: (-4.0, -13.0),
+        6: (8.0, 11.0),
+        7: (-8.0, -11.0),
+        8: (16.0, 16.0),
+        9: (-16.0, -16.0),
+        10: (18.0, 18.0),
+        11: (-18.0, -18.0),
+    }
+    rec = {
+        "mass": 12.0,
+        "binding": 31.449361063651804,
+        "shell_bindings": [
+            2.8963589184073895,
+            1.35434973735769,
+            1.193364772721091,
+            1.28597484643118,
+        ],
+    }
+    members = list(range(12))
+    work = dict(base)
+    _, groups = w._shell_scale(members, rec, work)
+    # Spec classification: unscaled radii about the unscaled mean.
+    swx = 0.0
+    swy = 0.0
+    for i in members:
+        swx += base[i][0]
+        swy += base[i][1]
+    cx = swx / rec["mass"]
+    cy = swy / rec["mass"]
+    unscaled = []
+    for i in members:
+        dx = base[i][0] - cx
+        dy = base[i][1] - cy
+        unscaled.append(math.sqrt(dx * dx + dy * dy))
+    want = shell_assignment(unscaled)
+    want_groups = [[] for _ in range(4)]
+    for slot, shell in enumerate(want):
+        want_groups[shell].append(slot)
+    assert groups == want_groups, "pre-scale classification wins"
+    # Premise guard: the tie is exact unscaled and breaks under the
+    # solved scale, so the post-scale classification differs — the
+    # test genuinely pins the order.
+    lam = struct.unpack("<d", struct.pack("<Q", 0x3FBE3BCD35A85906))[0]
+    rc = math.sqrt((lam * 4.0) ** 2 + (lam * 13.0) ** 2)
+    rd = math.sqrt((lam * 8.0) ** 2 + (lam * 11.0) ** 2)
+    assert struct.pack("<d", unscaled[4]) == struct.pack("<d", unscaled[6])
+    assert rd < rc, f"scaled rounding must break the tie toward (8,11): {rd} !< {rc}"
+    scaled = []
+    for i in members:
+        sx = lam * base[i][0]
+        sy = lam * base[i][1]
+        scaled.append(math.sqrt(sx * sx + sy * sy))
+    assert shell_assignment(scaled) != want, (
+        "post-scale classification must differ for the premise to bite"
+    )
+    # Secondary: the per-shell solves close on the record targets with
+    # the pre-scale classification retained.
+    for k, group in enumerate(groups):
+        binding = 0.0
+        for a in range(len(group)):
+            for b in range(a + 1, len(group)):
+                dx = work[group[b]][0] - work[group[a]][0]
+                dy = work[group[b]][1] - work[group[a]][1]
+                binding += 1.0 / math.sqrt(dx * dx + dy * dy + 1.0)
+        target = rec["shell_bindings"][k]
+        rel = abs(binding - target) / max(abs(target), 1e-30)
+        assert rel < 1e-9, f"shell {k} residual {rel}"
+
+
 def test_shells_modes_differ_from_radial(tmp_path):
     order, _ = _region_occupancy(42, 12, 5)
     region = order[0]

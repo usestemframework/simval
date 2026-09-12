@@ -755,9 +755,13 @@ class GravityWorld:
                     hi = mid
             return (lo + hi) * 0.5
 
-        lam = solve(all_pairs, rec["binding"])
-        for i in members:
-            base[i] = (lam * base[i][0], lam * base[i][1])
+        # Section 25 pins the order: classify the base (step 2) before
+        # the global scale (step 3). The mass-weighted mean and radii
+        # come from the UNSCALED section 20 displacements and the
+        # shells vector is retained for the per-shell solves — solving
+        # and applying lambda first can flip rank near-ties under
+        # binary64 rounding (scaled radii about the scaled mean are not
+        # exactly the unscaled radii), changing shell membership.
         swx = 0.0
         swy = 0.0
         for i in members:
@@ -772,6 +776,9 @@ class GravityWorld:
             dy = base[i][1] - cy
             radii.append(math.sqrt(dx * dx + dy * dy))
         shells = shell_assignment(radii)
+        lam = solve(all_pairs, rec["binding"])
+        for i in members:
+            base[i] = (lam * base[i][0], lam * base[i][1])
         s = shell_count(n)
         pairs = [[] for _ in range(s)]
         for a in range(n):
