@@ -4,6 +4,7 @@
   "force_field": "amber14",
   "identity": {
     "energy.xvg": "cb4da4d6479fe3fae5697f6e73e51712fe879dbca73295c62d5982b074a72537",
+    "methods.json": "0723908458eddfc53a9b0407afdc91cb5bb163ae29fadc4523ab1e6efa1e11ae",
     "topology.pdb": "311abc545f605bb28bee6a8847a5416a3785cf4a8f8f37a2ff34a0f0d4a9d4ae",
     "traj.dcd": "337597102ed246b1a0fe1bbeb50413b26e9373ebbf5632fbe58b0012149b79b4"
   },
