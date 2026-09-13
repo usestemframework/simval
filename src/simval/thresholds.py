@@ -49,14 +49,7 @@ CHECK_KWARG = {
 }
 
 
-def validate_threshold(name: str, value) -> float:
-    """Fail closed on non-finite, non-positive, or absurd thresholds.
-
-    JSON parses `NaN`/`Infinity` literals into floats, so a thresholds file
-    can smuggle in a bound that makes every `<= threshold` comparison true
-    (inf) or vacuous (NaN). Reject those, negatives, zero, and anything
-    above the sanity ceiling with a clear error (audit ORA-004).
-    """
+def _validate_value(name: str, value) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         try:
             value = float(value)
@@ -72,6 +65,42 @@ def validate_threshold(name: str, value) -> float:
             f"threshold {name!r} exceeds the sanity ceiling {MAX_THRESHOLD}: {v}"
         )
     return v
+
+
+def validate_threshold(name: str, value) -> float:
+    """Fail closed on unknown names, non-finite, non-positive, or absurd
+    thresholds.
+
+    JSON parses `NaN`/`Infinity` literals into floats, so a thresholds file
+    can smuggle in a bound that makes every `<= threshold` comparison true
+    (inf) or vacuous (NaN). Reject those, negatives, zero, and anything
+    above the sanity ceiling with a clear error (audit ORA-004). Unknown
+    names are rejected too (audit THR-001): a typo like `energy_drif`
+    used to be accepted, stored, and never consulted by any check — the
+    intended override silently did nothing. Extensions must register
+    explicitly via register_threshold().
+    """
+    if name not in DEFAULT_THRESHOLDS:
+        raise ValueError(
+            f"unknown threshold {name!r}: not in the registered schema "
+            f"{sorted(DEFAULT_THRESHOLDS)} (extension thresholds must be "
+            "registered explicitly via register_threshold)"
+        )
+    return _validate_value(name, value)
+
+
+def register_threshold(name: str, default: float, *, kwarg: str | None = None) -> None:
+    """Explicit extension point (audit THR-001): register a new threshold
+    name (and optionally the kwarg a check reads it through) so an
+    extension's overrides validate instead of colliding with the
+    unknown-name rejection."""
+    if not isinstance(name, str) or not name:
+        raise ValueError("threshold name must be a non-empty string")
+    if name in DEFAULT_THRESHOLDS or name in CHECK_KWARG:
+        raise ValueError(f"threshold {name!r} is already registered")
+    DEFAULT_THRESHOLDS[name] = _validate_value(name, default)
+    if kwarg is not None:
+        CHECK_KWARG[name] = kwarg
 
 
 def load(run_dir=None, overrides: dict | None = None) -> dict:

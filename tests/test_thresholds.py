@@ -61,3 +61,45 @@ def test_thresholds_file_must_be_object(tmp_path):
     (run / "thresholds.json").write_text("[1, 2]")
     with pytest.raises(ValueError, match="JSON object"):
         diagnose(run, selection="protein")
+
+
+# --- THR-001: unknown threshold names are rejected, not silently stored ---
+
+
+def test_unknown_threshold_name_rejected():
+    # "energy_drif" used to be accepted, stored, and never used - the
+    # intended energy_drift override silently did nothing.
+    with pytest.raises(ValueError, match="unknown threshold 'energy_drif'"):
+        load_thresholds(None, {"energy_drif": 0.001})
+    with pytest.raises(ValueError, match="unknown threshold 'typo'"):
+        load_thresholds(None, {"typo": 1.0})
+
+
+def test_unknown_threshold_name_in_run_dir_file_rejected(tmp_path):
+    run = make_run_dir(tmp_path / "good", good=True)
+    (run / "thresholds.json").write_text('{"rmsd_plato": 0.5}')
+    with pytest.raises(ValueError, match="unknown threshold 'rmsd_plato'"):
+        diagnose(run, selection="protein")
+
+
+def test_correctly_named_override_applies(tmp_path):
+    run = make_run_dir(tmp_path / "good", good=True)
+    m = diagnose(run, selection="protein", thresholds={"energy_drift": 1e-9})
+    ed = [d for d in m["diagnostics"] if d["name"] == "energy_drift"][0]
+    assert ed["threshold"] == 1e-9
+    assert ed["passed"] is False
+
+
+def test_registered_extension_threshold_accepted():
+    import simval.thresholds as T
+
+    T.register_threshold("custom_gate", 2.0, kwarg="min_ratio")
+    try:
+        resolved = load_thresholds(None, {"custom_gate": 3.0})
+        assert resolved["custom_gate"] == 3.0
+        assert T.kwargs_for("custom_gate", resolved) == {"min_ratio": 3.0}
+        with pytest.raises(ValueError, match="already registered"):
+            T.register_threshold("custom_gate", 1.0)
+    finally:
+        T.DEFAULT_THRESHOLDS.pop("custom_gate", None)
+        T.CHECK_KWARG.pop("custom_gate", None)
