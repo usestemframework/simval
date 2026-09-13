@@ -5,7 +5,7 @@
 > authoritative record of oracle-hardening findings against HEAD 7495370 —
 > is §F at the bottom of this file. Batch 2 (HEAD 0bdb2d3) is §G; batch 3
 > (HEAD 74e8ee6) is §H; batch 4 (HEAD f636c8c) is §I; batch 5 (HEAD 6ed8f28)
-> is §J.
+> is §J; batch 6 (HEAD a378e55) is §K.
 
 > Synthesis of five independent analysis passes: competitive positioning, technical architecture, risk/oversight hunt, Hive codebase audit, product/UX/scope.
 > Convergent findings (flagged by ≥2 passes) are high-confidence. The audit's own conclusion is in §D.
@@ -344,3 +344,56 @@ ontos examples (PASS, provenance byte-stable), and the complete CI
 cross-verification against the local ontos clone at 1792cae (25 stream
 contracts incl. wallshot/coarsehit test-ICs + 3 modal-audio cases) —
 every stream and WAV bit-exact, zero mismatches.
+
+---
+
+## K. Verification-oracle audit register, batch 6 (2026-09-13)
+
+Findings verified against HEAD `a378e55` by an external review; implemented
+in the commits below. Same posture as §F–§J: simval is the trust anchor,
+every fix errs toward failing closed. P0s first; one commit per finding.
+
+| ID | Severity | Area | Finding | Status |
+|---|---|---|---|---|
+| GOLD-003 | P0 | oracle/cases.py | Pin bypass: `_verify_pinned` selected the manifest entry by the JSON's embedded `name`, `_load` never required name == path.stem, `get_case` accepted path-like/absolute names, and unpinned external JSONs loaded freely | Fixed — get_case accepts only plain registered names (path-like, absolute and dot names rejected before filesystem use; resolved path must stay inside references/); `_load` requires embedded name == file stem so a byte-copied golden cannot pose as another case or ride its pin; external/custom references load only through the explicitly named `load_case_unpinned()`, which still digest-verifies any file claiming a pinned case name (impostor rule) |
+| ENG-001 | P0 | context.py | Engine selection was first-match, and SyntheticEngine matched any dir with *.npy and no .xtc — an unstable wave run plus a stray energy.npy diagnosed as synthetic, skipping wave checks/provenance | Fixed — select_engine evaluates EVERY detector and requires exactly one match; ambiguity is an error naming the candidates. SyntheticEngine keys on the precise fixture signature (energy.npy + positions.npy + reference.npy, the set fixtures.make_run_dir always writes), so a stray npy cannot swallow a concrete domain; CFL-invalid wave + energy.npy selects wave-fdtd and fails CFL |
+| ORA-005 | P0 | oracle/validate.py, context.py, _util.py | GROMACS reference identity hashed only the selected trajectory topology (conf.gro won precedence, hiding topol.tpr) plus trajectory and xvg; .mdp/.top/params.json/methods.json omitted; no force-field contract vs methods metadata | Fixed — one canonical enumerator `_util.gromacs_scenario_inputs` shared by provenance (consumed inputs) and identity covers every PRESENT role (structure, tpr, alternate topology, trajectory, xvg, mdp, top, params.json, methods.json), keeping role-level ambiguity errors; `gromacs_force_field_problem` enforces methods.json's declared force field against the .top derivation (GROMACS `.ff` include suffix normalized) before any metric. Golden resync below |
+| ONT-020 | P0 | ontos_gravity.py, ontos.py | Contract event comparison converted to Counters — order discarded: a same-boundary demote->promote passed as its promote->demote twin while replay follows candidate stream order | Fixed — all three event contracts (gravity run contract, zoom-policy check, life initialization contract) compare ORDERED boundary sequences against the producer's canonical schedule (`expected_event_sequence`: sort+dedup of the requested triples, mirroring the ontos CLI, then observer policy events in region order). Reordering, duplication and omission are each reported distinctly (contract_event_order / order detail); ONT-008's multiset error fields remain for count-level diffs. A self-consistent reordered stream fails specifically on ordering at both the verifier and engine-check layers |
+| FEP-003 | P0 | fep.py, pipeline.py, oracle/validate.py | `_load()` silently continued past missing declared files; a declared-but-missing reverse leg left u_nk_reverse absent so check_hysteresis returned passing-skipped — overall PASS | Fixed — every filename present in `files`/`reverse_files` must exist (and parse); the miss raises a run-contract error recorded as a failing `fep_run_contract` result in the pipeline and raised before metrics in the oracle. Absence of the reverse_files KEY remains the intentional no-reverse path (hysteresis skipped, no error) |
+| PREP-001 | P0 | diagnostics/prep.py | Net-charge failed open: `moltype_q.get(..., 0.0)` for unparsed types, zero molblocks summed to charge 0, gmx dump exit ignored with partial stdout parsed | Fixed — net_charge_from_tpr requires a successful gmx dump exit; parse_net_charge requires >= 1 parsed molblock and every molblock-referenced moltype to have parsed charge data (a legitimately neutral moltype parses to a zero sum and stays fine) |
+| THR-001 | P1 | thresholds.py | Unknown threshold names were accepted, stored and never used — a typo like `energy_drif` silently disabled the intended override | Fixed — override and run-dir-file keys must exist in the registered schema, with a clear unknown-threshold error naming the valid set; `register_threshold(name, default, kwarg=...)` is the explicit extension point |
+| PROV-002 | P1 | context.py, pipeline.py | The tpr entered consumed_inputs only when MDAnalysis atom-type extraction succeeded; the typed not-available branch omitted it while charge_state still consumed the tpr via gmx dump | Fixed by the ORA-005 canonical enumeration (the tpr role is registered whenever present, regardless of optional extraction success) + regression test pinning the audit scenario: load_atom_types forced not-available with a working gmx dump, manifest carries the tpr hash, tampering it fails verify-manifest |
+| MAN-003 | P1 | manifest.py, pipeline.py | File paths stored as supplied; verify_manifest re-resolved against the process CWD — a shadow file with the original bytes at the same relative path made tampering invisible | Fixed — manifests store canonical run-relative keys (`_artifact_files` relativizes under the run dir; compute_hashes/build_manifest gained files_base so build-time hashing follows the same base) and verify_manifest resolves every relative entry against the manifest's OWN parent directory. A manifest written outside its run dir now fails closed (missing) instead of verifying CWD-relative shadows |
+| AUDIO-002 | P2 | ontos_gravity.py, ontos_audio.py | parse_stream_v2 enforced neither the 128x128 invariant header nor ContactParams finiteness/ranges — parser-only consumers (audio) accepted invalid streams that only replay caught later | Fixed — the strict parser rejects non-128x128 world headers and validates ContactParams (finite restitution in [0,1], finite friction >= 0) at parse time; the replay's redundant checks remain. Corpus WAVs unchanged (pinned bit-identical) |
+
+Golden/reference files touched in batch 6, and why:
+
+- `references/lysozyme_openmm.json` — `identity` gains `methods.json`
+  (ORA-005: the canonical GROMACS scenario enumeration includes it when
+  present; the openmm_lysozyme fixture carries one). No metric, tolerance
+  or source bytes changed.
+- `references/MANIFEST.json` — regenerated for the lysozyme_openmm content
+  pin via `scripts/regen_reference_manifest.py`.
+- No corpus stream or WAV bytes changed: all 20 ontos examples verify
+  through the full engine path with byte-stable provenance.
+
+Deliberate test-behavior updates (each locked in the old behavior):
+
+- `tests/test_reference_rules.py` external-file probes moved from the
+  private `_load` to `load_case_unpinned`, and probe files renamed to
+  match their embedded probe names (GOLD-003 name/stem rule).
+- `tests/test_ontos_gravity.py::test_nonfinite_contact_params_rejected_by_stream_verifier`
+  — invalid ContactParams now fail at parse time (AUDIO-002) instead of
+  as replay mismatches; same rejection, one layer earlier.
+- `tests/test_manifest.py`/`tests/test_cli_real.py` file-set assertions
+  moved from absolute paths to run-relative keys, and manifests under
+  test are written inside their run dir (MAN-003 bundle model).
+
+Verification: full pytest suite (531 passed with optional-engine deps
+installed; the network-gated afold test also passes locally), `simval
+diagnose` on all 20 ontos examples (PASS, canonical digests stable across
+runs), all 14 shipped goldens validate locally through the new identity
+rule, and the complete CI cross-verification against the local ontos
+clone at 1792cae (27 stream contracts incl. wallshot/coarsehit test-ICs +
+3 modal-audio cases) — every stream and WAV bit-exact, zero mismatches.
+Ruff: no new findings over the a378e55 baseline.

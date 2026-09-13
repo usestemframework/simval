@@ -502,7 +502,12 @@ def test_life_reordered_initialization_fails_contract_on_ordering(tmp_path):
     # with itself (physics is internally consistent), the event multiset
     # matches the requested pair — only the ORDER differs from the
     # canonical demote-then-promote request. The contract must fail it.
-    from simval.ontos import ReferenceWorld, life_contract_problems, parse_stream, verify_stream
+    from simval.ontos import (
+        ReferenceWorld,
+        life_contract_problems,
+        parse_stream,
+        verify_stream,
+    )
 
     def build(path, schedule):
         world = ReferenceWorld(seed=42)
@@ -518,7 +523,6 @@ def test_life_reordered_initialization_fails_contract_on_ordering(tmp_path):
     for path in (canonical, swapped):
         summary = verify_stream(path, 42)
         assert summary["mismatch_count"] == 0, (path, summary["mismatches"])
-        _, records = parse_stream(path)
 
     assert life_contract_problems(meta, verify_stream(canonical, 42), parse_stream(canonical)[1]) == []
     problems = life_contract_problems(meta, verify_stream(swapped, 42), parse_stream(swapped)[1])

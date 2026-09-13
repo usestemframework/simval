@@ -85,7 +85,7 @@ def test_unknown_threshold_name_in_run_dir_file_rejected(tmp_path):
 def test_correctly_named_override_applies(tmp_path):
     run = make_run_dir(tmp_path / "good", good=True)
     m = diagnose(run, selection="protein", thresholds={"energy_drift": 1e-9})
-    ed = [d for d in m["diagnostics"] if d["name"] == "energy_drift"][0]
+    ed = next(d for d in m["diagnostics"] if d["name"] == "energy_drift")
     assert ed["threshold"] == 1e-9
     assert ed["passed"] is False
 

@@ -127,7 +127,7 @@ def gromacs_force_field_problem(run: Path) -> str | None:
     if derived:
         # GROMACS include dirs carry a ".ff" suffix ("amber99sb-ildn.ff")
         # that methods metadata drops ("amber99sb-ildn").
-        derived = derived[:-3] if derived.endswith(".ff") else derived
+        derived = derived.removesuffix(".ff")
     if derived and derived != declared:
         return (
             f"force-field contract violation: methods.json declares {declared!r} "

@@ -119,6 +119,7 @@ class GromacsEngine(EngineAdapter):
     def load_context(self, run: Path, selection: str) -> RunContext:
         from simval import io, metadata as meta_mod
         from simval._util import (
+            gromacs_scenario_inputs,
             select_run_topology,
             select_structure,
             select_trajectory_topology,
@@ -132,8 +133,6 @@ class GromacsEngine(EngineAdapter):
         # Provenance consumes the canonical scenario enumeration (audit
         # ORA-005): every PRESENT role is hashed, regardless of whether an
         # optional extraction over it later succeeded (audit PROV-002).
-        from simval._util import gromacs_scenario_inputs
-
         ctx.consumed_inputs = gromacs_scenario_inputs(run)
 
         # MD inputs are ROLES, not mutually-exclusive alternatives: a normal
