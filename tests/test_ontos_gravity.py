@@ -2374,3 +2374,78 @@ def test_observer_duplicate_event_fails_zoom_contract_in_verifier(tmp_path):
     assert any(
         m["field"].startswith("contract_") for m in summary["mismatches"]
     )
+
+
+# --- ONT-020: boundary events are compared as ORDERED sequences ---
+
+
+def test_expected_event_sequence_is_producer_canonical():
+    from simval.ontos_gravity import expected_event_sequence
+
+    # Scheduled events normalize like the ontos CLI (sort + dedup); the
+    # metadata's original order must not leak into the expectation.
+    seq = expected_event_sequence([(2, 0, 1), (2, 0, 0), (1, 3, 0), (2, 0, 0)])
+    assert seq == [(1, 3, 0), (2, 0, 0), (2, 0, 1)]
+
+
+def test_same_boundary_order_swap_fails_contract_on_ordering(tmp_path):
+    # Same-tick demote,promote vs promote,demote: identical event multiset,
+    # different run (replay follows candidate stream order). A
+    # self-consistent promote-then-demote stream must fail the canonical
+    # contract specifically on ordering.
+    from simval.ontos_gravity import GravityContract, verify_stream_gravity
+
+    order, _ = _region_occupancy(42, 4, 3)
+    region = order[0]
+    rx, ry = region % 2, region // 2
+    contract = GravityContract.from_metadata(
+        {"bodies": 4, "ticks": 8, "events": [[2, rx, ry, 0], [2, rx, ry, 1]]}
+    )
+
+    canonical = tmp_path / "canonical.stream"
+    _emit_gravity_stream(canonical, 42, 4, [(2, region, 0), (2, region, 1)], 8)
+    assert verify_stream_gravity(canonical, 42, expected=contract)["mismatch_count"] == 0
+
+    swapped = tmp_path / "swapped.stream"
+    _emit_gravity_stream(swapped, 42, 4, [(2, region, 1), (2, region, 0)], 8)
+    summary = verify_stream_gravity(swapped, 42, expected=contract)
+    assert any(m["field"] == "contract_event_order" for m in summary["mismatches"]), (
+        summary["mismatches"]
+    )
+
+
+def test_observer_boundary_order_swap_fails_contract_and_zoom_policy(tmp_path):
+    # The observer corpus boundary before tick 289 carries two policy
+    # events (regions 2 and 3). Swapping the same-size records preserves
+    # the multiset and the framing — only the order changes — and must
+    # fail both the zoom-policy check and the verifier contract.
+    import shutil
+
+    from simval.ontos_gravity import (
+        GravityContract,
+        check_zoom_policy,
+        parse_stream_v2,
+        verify_stream_gravity,
+    )
+
+    run = tmp_path / "ontos_run"
+    shutil.copytree(EXAMPLES / "observer", run)
+    data = bytearray((run / "ontos.stream").read_bytes())
+    level_offsets = [off for off, tag in _level_record_offsets(bytes(data)) if tag == 4]
+    # The last two RegionLevel records are the tick-289 pair.
+    a, b = level_offsets[-2], level_offsets[-1]
+    rec_a = bytes(data[a : a + 10])
+    rec_b = bytes(data[b : b + 10])
+    swapped = bytes(data[:a]) + rec_b + rec_a + bytes(data[b + 10 :])
+    (run / "ontos.stream").write_bytes(swapped)
+
+    _, records = parse_stream_v2(run / "ontos.stream")
+    result = check_zoom_policy(records, 5, 777)
+    assert not result.passed
+    assert result.detail["order"]["note"].startswith("boundary RegionLevel records")
+
+    meta = json.loads((EXAMPLES / "observer" / "ontos.json").read_text())
+    summary = verify_stream_gravity(
+        run / "ontos.stream", 5, expected=GravityContract.from_metadata(meta)
+    )
+    assert any(m["field"] == "contract_event_order" for m in summary["mismatches"])

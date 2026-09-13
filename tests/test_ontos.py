@@ -492,3 +492,59 @@ def test_life_event_at_later_boundary_fails_engine_checks(tmp_path):
     results = run_checks(ctx)
     contract = next((r for r in results if r.name == "ontos_run_contract"), None)
     assert contract is not None and not contract.passed
+
+
+# --- ONT-020: life initialization events are compared as an ORDERED sequence ---
+
+
+def test_life_reordered_initialization_fails_contract_on_ordering(tmp_path):
+    # A self-consistent promote-then-demote tick-1 stream: replay agrees
+    # with itself (physics is internally consistent), the event multiset
+    # matches the requested pair — only the ORDER differs from the
+    # canonical demote-then-promote request. The contract must fail it.
+    from simval.ontos import ReferenceWorld, life_contract_problems, parse_stream, verify_stream
+
+    def build(path, schedule):
+        world = ReferenceWorld(seed=42)
+        world.seed_r_pentomino()
+        _emit_stream(path, world, schedule, 16)
+
+    canonical = tmp_path / "canonical.stream"
+    build(canonical, [(1, 1, 0), (1, 1, 1)])  # demote then promote
+    swapped = tmp_path / "swapped.stream"
+    build(swapped, [(1, 1, 1), (1, 1, 0)])  # promote then demote
+
+    meta = {"mode": "life", "ticks": 16, "events": [["demote", 1, 1], ["promote", 1, 1]]}
+    for path in (canonical, swapped):
+        summary = verify_stream(path, 42)
+        assert summary["mismatch_count"] == 0, (path, summary["mismatches"])
+        _, records = parse_stream(path)
+
+    assert life_contract_problems(meta, verify_stream(canonical, 42), parse_stream(canonical)[1]) == []
+    problems = life_contract_problems(meta, verify_stream(swapped, 42), parse_stream(swapped)[1])
+    assert any("event order mismatch" in p for p in problems), problems
+
+
+def test_life_order_contract_fails_engine_checks(tmp_path):
+    # Through the engine adapter: the reordered stream is replay-clean but
+    # must fail the ontos_run_contract diagnostic.
+    import shutil
+
+    run = tmp_path / "ontos_run"
+    shutil.copytree(EXAMPLES / "r_pentomino", run)
+    world = ReferenceWorld(seed=42)
+    world.seed_r_pentomino()
+    _emit_stream(run / "ontos.stream", world, [(1, 1, 1), (1, 1, 0)], 64)
+    meta = {
+        "mode": "life",
+        "seed": 42,
+        "ticks": 64,
+        "events": [["demote", 1, 1], ["promote", 1, 1]],
+    }
+    (run / "ontos.json").write_text(json.dumps(meta))
+
+    ctx = OntosEngine().load_context(run, selection="default")
+    results = run_checks(ctx)
+    contract = next((r for r in results if r.name == "ontos_run_contract"), None)
+    assert contract is not None and not contract.passed
+    assert any("event order mismatch" in p for p in contract.detail["problems"])

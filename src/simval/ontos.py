@@ -442,7 +442,10 @@ def life_contract_problems(meta: dict, summary: dict, records: list) -> list[str
     are initialization semantics: every requested event must sit in the
     boundary before TickHeader 1 — an occurrence at any later boundary is
     a contract violation even though the event identity and count match.
-    """
+    The comparison is ORDERED (audit ONT-020): the producer initializes in
+    demotes-then-promotes CLI order and replay applies boundary records in
+    stream order, so a promote->demote stream is a different run than the
+    requested demote->promote even though the event multisets match."""
     problems = []
     meta_ticks = meta.get("ticks")
     if meta_ticks is not None and int(meta_ticks) != summary["ticks_verified"]:
@@ -461,6 +464,7 @@ def life_contract_problems(meta: dict, summary: dict, records: list) -> list[str
     if "events" in meta:
         from collections import Counter
 
+        want_seq: list[tuple] = []
         want = Counter()
         for ev in meta["events"]:
             if len(ev) != 3 or ev[0] not in _LIFE_EVENT_KINDS:
@@ -470,12 +474,22 @@ def life_contract_problems(meta: dict, summary: dict, records: list) -> list[str
             if rx not in (0, 1) or ry not in (0, 1):
                 problems.append(f"ontos.json life event region ({rx},{ry}) outside the 2x2 grid")
                 continue
-            want[(rx, ry, _LIFE_EVENT_KINDS[kind])] += 1
-        got = Counter(key for _, key in placements)
+            key = (rx, ry, _LIFE_EVENT_KINDS[kind])
+            want_seq.append(key)
+            want[key] += 1
+        got_seq = [key for _, key in placements]
+        got = Counter(got_seq)
         for key in sorted((want - got).elements()):
             problems.append(f"missing scheduled event {key}")
         for key in sorted((got - want).elements()):
             problems.append(f"unscheduled event {key} in stream")
+        if want == got and got_seq != want_seq:
+            i = next(idx for idx in range(len(got_seq)) if got_seq[idx] != want_seq[idx])
+            problems.append(
+                f"event order mismatch at initialization position {i}: requested "
+                f"{want_seq[i]} but the stream carries {got_seq[i]} (boundary events "
+                "are order-sensitive: replay applies them in stream order)"
+            )
         for tick, key in placements:
             if tick != 1:
                 problems.append(

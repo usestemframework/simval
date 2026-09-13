@@ -1456,6 +1456,30 @@ def expected_zoom_policy(seed: int, offset: int, ticks: int, cli_events=None):
     return events
 
 
+def expected_event_sequence(scheduled, *, seed=None, observer=None, ticks=None):
+    """The exact ORDERED RegionLevel sequence the deterministic producer
+    emits (audit ONT-020).
+
+    The ontos CLI sorts + dedups the requested (tick, region, action)
+    triples and, at each boundary, writes the scheduled events first and
+    the observer zoom-policy events (region order) after the step. Replay
+    follows candidate stream order, so the contract must compare ordered
+    sequences with duplicates — a same-boundary demote->promote is a
+    different run than promote->demote."""
+    sched = sorted(set(scheduled or ()))
+    if observer is None:
+        return sched
+    if ticks is None:
+        raise ValueError("observer event sequences require the requested ticks")
+    policy = expected_zoom_policy(seed, observer, ticks, cli_events=sched)
+    by_tick: dict[int, list] = {}
+    for ev in sched:
+        by_tick.setdefault(ev[0], []).append(ev)
+    for ev in policy:
+        by_tick.setdefault(ev[0], []).append(ev)
+    return [ev for t in sorted(by_tick) for ev in by_tick[t]]
+
+
 def check_zoom_policy(records, seed: int, offset: int, *, cli_events=None) -> DiagnosticResult:
     """Verify the stream's RegionLevel sequence matches the zoom policy.
 
@@ -1463,12 +1487,10 @@ def check_zoom_policy(records, seed: int, offset: int, *, cli_events=None) -> Di
     via --demote-at/--promote-at; they are interleaved with policy events
     in stream order and excluded from the policy expectation.
 
-    The comparison is over multisets, not membership sets: the expected
-    sequence is policy events + requested CLI events, each exactly once,
-    and a duplicated (or dropped) RegionLevel record fails (audit ONT-008).
-    """
-    from collections import Counter
-
+    The comparison is over ORDERED boundary sequences, not multisets
+    (audit ONT-020 on top of ONT-008): the expected sequence is the
+    producer's scheduled-then-policy order, and a reordered, duplicated or
+    dropped RegionLevel record all fail."""
     stream_events = []
     pending = []
     last_tick = 0
@@ -1481,17 +1503,40 @@ def check_zoom_policy(records, seed: int, offset: int, *, cli_events=None) -> Di
                 stream_events.append((tick, ry * 2 + rx, lv))
             pending.clear()
             last_tick = tick
-    policy = expected_zoom_policy(seed, offset, last_tick, cli_events=cli_events)
-    expected = Counter(policy) + Counter(cli_events or [])
-    got = Counter(stream_events)
-    ok = got == expected
+    try:
+        expected_seq = expected_event_sequence(
+            cli_events, seed=seed, observer=offset, ticks=last_tick
+        )
+    except ValueError as e:
+        return DiagnosticResult(
+            name="ontos_zoom_policy",
+            passed=False,
+            threshold=0.0,
+            value=1.0,
+            detail={"error": str(e)[:200]},
+        )
+    from collections import Counter
+
+    expected = Counter(expected_seq)
+    got_counter = Counter(stream_events)
+    ok = stream_events == expected_seq
     detail = {
         "stream_events": len(stream_events),
-        "policy_events": len(policy),
+        "policy_events": len(expected_seq),
     }
     if not ok:
-        detail["missing"] = sorted((expected - got).elements())[:4]
-        detail["unexpected"] = sorted((got - expected).elements())[:4]
+        detail["missing"] = sorted((expected - got_counter).elements())[:4]
+        detail["unexpected"] = sorted((got_counter - expected).elements())[:4]
+        if expected == got_counter:
+            i = next(
+                idx for idx in range(len(stream_events)) if stream_events[idx] != expected_seq[idx]
+            )
+            detail["order"] = {
+                "expected": expected_seq[i],
+                "actual": stream_events[i],
+                "note": "boundary RegionLevel records are order-sensitive: "
+                "replay applies them in stream order",
+            }
     return DiagnosticResult(
         name="ontos_zoom_policy",
         passed=ok,
@@ -1906,23 +1951,19 @@ def verify_stream_gravity(path, seed: int, profile: str | None = None, *, expect
         if expected.events is not None:
             from collections import Counter
 
-            want = Counter(expected.events)
+            # ORDERED comparison (audit ONT-020): replay applies boundary
+            # RegionLevel records in candidate stream order, so the
+            # contract pins the producer's exact scheduled-then-policy
+            # sequence — not just the event multiset (ONT-008).
+            expected_seq = expected_event_sequence(
+                expected.events,
+                seed=seed,
+                observer=expected.observer,
+                ticks=expected.ticks,
+            )
+            want = Counter(expected_seq)
             got = Counter(observed_events)
-            if expected.observer is None:
-                expected_total = want
-            else:
-                # With an observer the deterministic zoom policy contributes
-                # its own events (which may legitimately repeat per policy),
-                # so the stream multiset must equal policy + requested
-                # exactly — a duplicated RegionLevel record must not pass
-                # (audit ONT-008).
-                expected_total = Counter(
-                    expected_zoom_policy(
-                        seed, expected.observer, expected.ticks,
-                        cli_events=expected.events,
-                    )
-                ) + want
-            for ev in sorted(expected_total - got):
+            for ev in sorted(want - got):
                 mismatches.append(
                     {
                         "tick": ev[0],
@@ -1931,13 +1972,29 @@ def verify_stream_gravity(path, seed: int, profile: str | None = None, *, expect
                         "actual": None,
                     }
                 )
-            for ev in sorted(got - expected_total):
+            for ev in sorted(got - want):
                 mismatches.append(
                     {
                         "tick": ev[0],
                         "field": "contract_unscheduled_event",
                         "expected": None,
                         "actual": ev,
+                    }
+                )
+            if want == got and observed_events != expected_seq:
+                i = next(
+                    idx
+                    for idx in range(len(observed_events))
+                    if observed_events[idx] != expected_seq[idx]
+                )
+                mismatches.append(
+                    {
+                        "tick": observed_events[i][0],
+                        "field": "contract_event_order",
+                        "expected": expected_seq[i],
+                        "actual": observed_events[i],
+                        "note": "boundary events are order-sensitive: replay follows "
+                        "the candidate stream order (demote->promote != promote->demote)",
                     }
                 )
 
