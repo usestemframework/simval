@@ -232,23 +232,39 @@ class FepEngine(EngineAdapter):
         rev_files = manifest.get("reverse_files") or (
             [] if manifest.get("files") else _discover(run, reverse=True))
 
-        def _load(file_list):
+        def _load(file_list, leg):
+            # Every filename present in a declared list must exist and parse;
+            # a declared-but-missing file is a run-contract error, never a
+            # silent skip (audit FEP-003). Absence of the whole 'files' /
+            # 'reverse_files' key remains the intentional discovery/no-reverse
+            # path — an explicit empty list discovers nothing.
             frames = []
             for name in file_list:
                 p = run / name
                 if not p.exists():
-                    continue
+                    raise ValueError(
+                        f"fep run contract: declared {leg} file {str(name)!r} is missing "
+                        f"from the run directory"
+                    )
                 ctx.consumed_inputs.append(p)
                 frames.append(_load_reduced_potentials(p, kind, temperature))
             return _concat_sorted(frames)
 
-        loaded = _load(fwd_files)
+        try:
+            loaded = _load(fwd_files, "forward")
+        except ValueError as e:
+            ctx.extra["fep_run_contract_error"] = str(e)
+            loaded = None
         key = "dhdl" if kind == "dhdl" else "u_nk"
         if loaded is not None:
             ctx.extra[key] = loaded
 
         if rev_files:
-            rev = _load(rev_files)
+            try:
+                rev = _load(rev_files, "reverse")
+            except ValueError as e:
+                ctx.extra.setdefault("fep_run_contract_error", str(e))
+                rev = None
             if rev is not None:
                 ctx.extra[key + "_reverse"] = rev
 

@@ -193,6 +193,12 @@ def run_checks(ctx: RunContext, thresholds: dict | None = None) -> list:
         results.append(quantum.check_norm_conservation(ctx.extra["norm"]))
         results.append(quantum.check_rabi_oscillates(ctx.extra["p_up"]))
 
+    if ctx.extra.get("fep_run_contract_error"):
+        # A declared-but-missing FEP input is a failing run-contract error,
+        # never a passing skip (audit FEP-003).
+        results.append(
+            _error_result("fep_run_contract", RuntimeError(ctx.extra["fep_run_contract_error"]))
+        )
     if "u_nk" in ctx.extra:
         results.append(fep.check_free_energy(ctx.extra["u_nk"]))
         results.append(fep.check_overlap(ctx.extra["u_nk"]))

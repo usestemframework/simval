@@ -172,6 +172,11 @@ def _fep_metrics(run: Path) -> dict:
     from simval.fep import FepEngine, check_free_energy, check_overlap
 
     ctx = FepEngine().load_context(run, "n/a")
+    if ctx.extra.get("fep_run_contract_error"):
+        # A declared-but-missing input is a run-contract error that must
+        # fail the validation, never flow into (or skip) metrics
+        # (audit FEP-003).
+        raise ValueError(ctx.extra["fep_run_contract_error"])
     u_nk = ctx.extra["u_nk"]
     fe = check_free_energy(u_nk)
     ov = check_overlap(u_nk)

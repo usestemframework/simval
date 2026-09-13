@@ -198,3 +198,78 @@ def test_fep_engine_registers_manifest_and_data_files(tmp_path):
     shutil.copytree(EXAMPLE, run)
     ctx = FepEngine().load_context(run, selection="n/a")
     assert {p.name for p in ctx.consumed_inputs} == {"fep.json", "dhdl.csv"}
+
+
+# --- FEP-003: declared-but-missing files fail the run contract ---
+
+
+def test_declared_missing_reverse_leg_fails_not_skips(tmp_path):
+    # reverse_files: ["missing.csv"] used to load nothing, leaving
+    # u_nk_reverse absent so check_hysteresis returned passing-skipped and
+    # the overall verdict was PASS. It must be a failing run-contract error.
+    import json
+    import shutil
+
+    from simval.pipeline import run_checks
+
+    run = tmp_path / "synthetic"
+    shutil.copytree(EXAMPLE, run)
+    manifest = json.loads((run / "fep.json").read_text())
+    manifest["reverse_files"] = ["missing.csv"]
+    (run / "fep.json").write_text(json.dumps(manifest))
+
+    ctx = FepEngine().load_context(run, selection="n/a")
+    results = {r.name: r for r in run_checks(ctx)}
+    contract = results["fep_run_contract"]
+    assert contract.passed is False
+    assert "declared reverse file 'missing.csv' is missing" in contract.detail["error"]
+    assert not all(r.passed for r in results.values())
+
+
+def test_declared_missing_forward_file_fails_not_skips(tmp_path):
+    import json
+    import shutil
+
+    from simval.pipeline import run_checks
+
+    run = tmp_path / "synthetic"
+    shutil.copytree(EXAMPLE, run)
+    manifest = json.loads((run / "fep.json").read_text())
+    manifest["files"] = manifest["files"] + ["missing.csv"]
+    (run / "fep.json").write_text(json.dumps(manifest))
+
+    ctx = FepEngine().load_context(run, selection="n/a")
+    results = {r.name: r for r in run_checks(ctx)}
+    assert results["fep_run_contract"].passed is False
+    assert "declared forward file 'missing.csv' is missing" in results["fep_run_contract"].detail["error"]
+
+
+def test_oracle_fep_metrics_fail_closed_on_missing_declared_file(tmp_path):
+    import json
+    import shutil
+
+    from simval.oracle.validate import _fep_metrics
+
+    run = tmp_path / "synthetic"
+    shutil.copytree(EXAMPLE, run)
+    manifest = json.loads((run / "fep.json").read_text())
+    manifest["reverse_files"] = ["missing.csv"]
+    (run / "fep.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="declared reverse file 'missing.csv' is missing"):
+        _fep_metrics(run)
+
+
+def test_absent_reverse_key_still_means_intentional_no_reverse(tmp_path):
+    # Only DECLARED lists are mandatory: a manifest with no reverse_files
+    # key keeps the documented no-reverse semantics (hysteresis skipped,
+    # no contract error).
+    import shutil
+
+    from simval.pipeline import run_checks
+
+    run = tmp_path / "synthetic"
+    shutil.copytree(EXAMPLE, run)
+    ctx = FepEngine().load_context(run, selection="n/a")
+    results = {r.name: r for r in run_checks(ctx)}
+    assert "fep_run_contract" not in results
+    assert results["fep_hysteresis"].detail.get("skipped") is True
