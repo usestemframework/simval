@@ -231,15 +231,25 @@ def run_checks(ctx: RunContext, thresholds: dict | None = None) -> list:
 
 def _artifact_files(ctx: RunContext) -> list[str]:
     """Canonical (sorted) artifact list: every input the engine actually
-    consumed. An engine that registers nothing breaks the provenance
-    contract — that is an error, not a fallback to globbing (audits
-    IO-001/PROV-001)."""
+    consumed, stored as RUN-RELATIVE paths (audit MAN-003) so verification
+    resolves against the manifest's own directory instead of whichever
+    CWD it is run from — a shadow file at the same relative path used to
+    make tampering invisible. An engine that registers nothing breaks the
+    provenance contract — that is an error, not a fallback to globbing
+    (audits IO-001/PROV-001)."""
     if not ctx.consumed_inputs:
         raise ValueError(
             f"engine {ctx.engine!r} registered no consumed inputs: every engine "
             "adapter must record the input files it consumed (audit PROV-001)"
         )
-    return sorted({str(p) for p in ctx.consumed_inputs})
+
+    def _key(p: Path) -> str:
+        try:
+            return str(p.relative_to(ctx.run_dir))
+        except ValueError:
+            return str(p)  # outside the run-dir: keep as-supplied
+
+    return sorted({_key(p) for p in ctx.consumed_inputs})
 
 
 def diagnose(run_dir, *, out: str = "provenance.json", selection: str = "protein",
@@ -255,7 +265,8 @@ def diagnose(run_dir, *, out: str = "provenance.json", selection: str = "protein
         run_params["skipped"] = ctx.skipped
 
     manifest = build_manifest(
-        run_params, results, files=_artifact_files(ctx), image_digest=None,
+        run_params, results, files=_artifact_files(ctx), files_base=run,
+        image_digest=None,
         metadata=ctx.metadata or None,
     )
     write_manifest(manifest, run / out)

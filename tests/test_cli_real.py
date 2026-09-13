@@ -67,10 +67,9 @@ def test_cli_main_real_run(tmp_path, capsys):
 def test_gro_tpr_xtc_dir_loads_deterministically_and_hashes_both(tmp_path):
     run = _make_real_run(tmp_path)
     manifest = diagnose(run, selection="protein")
+    # MAN-003: files are stored as canonical run-relative paths.
     hashed = set(manifest["files"])
-    assert str(run / "conf.gro") in hashed
-    assert str(run / "topol.tpr") in hashed
-    assert str(run / "traj.xtc") in hashed
+    assert {"conf.gro", "topol.tpr", "traj.xtc"} <= hashed
     assert manifest["params"]["n_selected_atoms"] > 0
 
 

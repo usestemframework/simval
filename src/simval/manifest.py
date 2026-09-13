@@ -34,15 +34,22 @@ def canonical_digest(payload: dict) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
-def compute_hashes(paths: Iterable, *, chunk: int = 1 << 16) -> dict[str, str]:
+def compute_hashes(paths: Iterable, *, chunk: int = 1 << 16, base=None) -> dict[str, str]:
+    """sha256 of every path, keyed canonically. With `base`, relative
+    entries resolve under it and the KEY stays the run-relative form
+    (audit MAN-003); absolute entries pass through unchanged."""
     out: dict[str, str] = {}
     for p in paths:
         path = Path(p)
+        key_path = path
+        if base is not None and not path.is_absolute():
+            key_path = Path(path)
+            path = Path(base) / path
         h = hashlib.sha256()
         with path.open("rb") as f:
             for block in iter(lambda: f.read(chunk), b""):
                 h.update(block)
-        out[str(path)] = h.hexdigest()
+        out[str(key_path)] = h.hexdigest()
     return out
 
 
@@ -51,6 +58,7 @@ def build_manifest(
     results,
     *,
     files=None,
+    files_base=None,
     image_digest=None,
     notes="",
     tier2_signed_off: bool = False,
@@ -64,7 +72,7 @@ def build_manifest(
         "verdict": "pass" if verdict else "fail",
         "params": params,
         "diagnostics": diagnostics,
-        "files": compute_hashes(files) if files else {},
+        "files": compute_hashes(files, base=files_base) if files else {},
         "image_digest": image_digest,
         "tier2_signed_off": bool(tier2_signed_off),
         "notes": notes,
@@ -98,8 +106,14 @@ def verify_manifest(path) -> dict:
     matches, and recompute the canonical digest over the manifest payload
     (audit MAN-001): verdict/diagnostics edits after signing must not pass.
     Closes the provenance loop: a manifest is not just written, it can be
-    checked later for tampering or drift."""
+    checked later for tampering or drift.
+
+    Relative file entries resolve against the MANIFEST'S OWN DIRECTORY,
+    never the process CWD (audit MAN-003): a shadow file at the same
+    relative path in another directory must not be able to stand in for
+    the tampered original."""
     manifest = load_manifest(path)
+    base = Path(path).parent
     stored = manifest.get("files", {})
     out = {"verified": [], "tampered": [], "missing": [], "verdict": manifest.get("verdict")}
     stored_digest = manifest.get("canonical_digest")
@@ -116,10 +130,16 @@ def verify_manifest(path) -> dict:
             )
     for rel, expected in stored.items():
         p = Path(rel)
+        if not p.is_absolute():
+            p = base / p
         if not p.exists():
             out["missing"].append(rel)
             continue
-        actual = compute_hashes([p]).get(rel)
+        h = hashlib.sha256()
+        with p.open("rb") as f:
+            for block in iter(lambda: f.read(1 << 16), b""):
+                h.update(block)
+        actual = h.hexdigest()
         (out["verified"] if actual == expected else out["tampered"]).append(rel)
     out["ok"] = not out["tampered"] and not out["missing"] and "manifest_tampered" not in out
     return out

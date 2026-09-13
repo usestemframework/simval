@@ -260,20 +260,15 @@ def test_manifest_hashes_all_consumed_synthetic_inputs(tmp_path):
     run = make_run_dir(tmp_path / "good", good=True)
     manifest = diagnose(run)
     hashed = set(manifest["files"])
-    assert hashed >= {
-        str(run / "energy.npy"),
-        str(run / "positions.npy"),
-        str(run / "reference.npy"),
-        str(run / "params.json"),
-    }
-    out = tmp_path / "prov.json"
+    assert hashed >= {"energy.npy", "positions.npy", "reference.npy", "params.json"}
+    out = run / "prov.json"
     write_manifest(manifest, out)
     assert verify_manifest(out)["ok"] is True
 
     np.save(run / "positions.npy", np.zeros((4, 3, 3)))  # tamper a consumed input
     tampered = verify_manifest(out)
     assert tampered["ok"] is False
-    assert str(run / "positions.npy") in tampered["tampered"]
+    assert "positions.npy" in tampered["tampered"]
 
 
 def test_artifact_paths_canonically_sorted(tmp_path):
@@ -418,12 +413,13 @@ def test_diagnose_passes_metadata_into_build_manifest(tmp_path, monkeypatch):
     captured = {}
     real_build = pipeline.build_manifest
 
-    def spy(params, results, *, files=None, image_digest=None, notes="",
-            tier2_signed_off=False, metadata=None):
+    def spy(params, results, *, files=None, files_base=None, image_digest=None,
+            notes="", tier2_signed_off=False, metadata=None):
         captured["metadata"] = metadata
         return real_build(
-            params, results, files=files, image_digest=image_digest,
-            notes=notes, tier2_signed_off=tier2_signed_off, metadata=metadata,
+            params, results, files=files, files_base=files_base,
+            image_digest=image_digest, notes=notes,
+            tier2_signed_off=tier2_signed_off, metadata=metadata,
         )
 
     monkeypatch.setattr(pipeline, "build_manifest", spy)
@@ -464,9 +460,9 @@ def test_every_json_domain_registers_and_hashes_its_config(tmp_path, config, dom
     run = tmp_path / domain
     shutil.copytree(fixture, run)
     manifest = diagnose(run)
-    assert str(run / config) in manifest["files"], manifest["files"].keys()
+    assert config in manifest["files"], manifest["files"].keys()
 
-    out = tmp_path / "prov.json"
+    out = run / "prov.json"
     write_manifest(manifest, out)
     assert verify_manifest(out)["ok"] is True
 
@@ -476,7 +472,7 @@ def test_every_json_domain_registers_and_hashes_its_config(tmp_path, config, dom
     (run / config).write_text(json.dumps(cfg))
     tampered = verify_manifest(out)
     assert tampered["ok"] is False
-    assert str(run / config) in tampered["tampered"]
+    assert config in tampered["tampered"]
 
 
 def test_engine_with_no_consumed_inputs_is_a_contract_error():
@@ -575,3 +571,58 @@ def test_tpr_consumed_when_atom_type_extraction_not_available(tmp_path, monkeypa
     tampered = verify_manifest(out)
     assert tampered["ok"] is False
     assert any(entry.endswith("topol.tpr") for entry in tampered["tampered"])
+
+
+# --- MAN-003: verification resolves against the manifest's directory ---
+
+
+def test_shadow_file_cannot_hide_tampering(tmp_path, monkeypatch):
+    # Diagnose via a relative path, tamper an artifact, then verify from a
+    # CWD that carries an original-byte SHADOW at the same relative path:
+    # the manifest's own directory is the immutable base, so the tampering
+    # is detected regardless of where verify runs.
+    import numpy as np
+
+    from simval.fixtures import make_run_dir
+    from simval.manifest import verify_manifest
+    from simval.pipeline import diagnose
+
+    home = tmp_path / "home"
+    (home / "runs").mkdir(parents=True)
+    make_run_dir(home / "runs" / "good", good=True)
+
+    monkeypatch.chdir(home)
+    manifest = diagnose("runs/good")
+    assert "energy.npy" in manifest["files"]  # stored run-relative
+
+    np.save(home / "runs" / "good" / "energy.npy", np.zeros(50))  # tamper
+
+    shadow_root = tmp_path / "elsewhere"
+    (shadow_root / "runs" / "good").mkdir(parents=True)
+    np.save(shadow_root / "runs" / "good" / "energy.npy", manifest_dummy_original(manifest, "energy.npy"))
+    monkeypatch.chdir(shadow_root)
+
+    out = verify_manifest(home / "runs" / "good" / "provenance.json")
+    assert out["ok"] is False
+    assert "energy.npy" in out["tampered"]
+
+
+def manifest_dummy_original(manifest, rel):
+    # Rebuild a plausible original-byte file is unnecessary: any content
+    # that is NOT the tampered bytes exercises the shadow. Use fresh
+    # fixture bytes.
+    from simval.fixtures import good_energy_series
+
+    return good_energy_series()
+
+
+def test_manifest_written_into_run_dir_verifies_from_any_cwd(tmp_path, monkeypatch):
+    from simval.fixtures import make_run_dir
+    from simval.manifest import verify_manifest
+    from simval.pipeline import diagnose
+
+    run = make_run_dir(tmp_path / "good", good=True)
+    diagnose(run)
+    monkeypatch.chdir(tmp_path)
+    out = verify_manifest(run / "provenance.json")
+    assert out["ok"] is True
