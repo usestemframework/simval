@@ -21,7 +21,13 @@ def parse_net_charge(dump_text: str) -> float:
     """System net charge = sum over moltypes of (template charge x #molecules).
     gmx dump lists per-moltype template atoms (with charges) and per-molblock
     molecule counts; both are required — summing templates alone double-counts
-    ion pairs to zero and misreports a neutralized system."""
+    ion pairs to zero and misreports a neutralized system.
+
+    Fails closed (audit PREP-001): unparsed moltypes default to zero charge
+    here, so a dump we failed to parse would silently read as neutral. At
+    least one molblock must parse, and every moltype a molblock references
+    must have parsed charge data (a legitimately neutral moltype parses to
+    a zero sum, which is fine)."""
     headers = [(m.start(), m.group(1)) for m in _MOLTYPE_HDR.finditer(dump_text)]
     if not headers:
         raise ValueError("no moltype blocks in gmx dump output")
@@ -35,12 +41,22 @@ def parse_net_charge(dump_text: str) -> float:
             moltype_q[idx] = sum(float(q) for q in qs)
 
     system = 0.0
+    molblocks = 0
     for bm in _MOLBLOCK.finditer(dump_text):
         block = bm.group(1)
         mt = re.search(r"moltype\s*=\s*(\d+)", block)
         nm = re.search(r"#molecules\s*=\s*(\d+)", block)
         if mt and nm:
-            system += moltype_q.get(mt.group(1), 0.0) * int(nm.group(1))
+            molblocks += 1
+            if mt.group(1) not in moltype_q:
+                raise ValueError(
+                    f"moltype {mt.group(1)} is referenced by a molblock but its atom "
+                    "charges did not parse from the gmx dump — the net charge would "
+                    "silently default to 0 for that species (audit PREP-001)"
+                )
+            system += moltype_q[mt.group(1)] * int(nm.group(1))
+    if molblocks == 0:
+        raise ValueError("no molblock parsed from gmx dump output — net charge uncomputable")
     return float(system)
 
 
@@ -51,6 +67,13 @@ def net_charge_from_tpr(tpr_path) -> float:
         ["gmx", "dump", "-s", str(tpr_path)],
         capture_output=True, text=True, timeout=180,
     )
+    if out.returncode != 0:
+        # Partial stdout from a failed dump must not pass through the
+        # parser as a complete, silently-wrong charge (audit PREP-001).
+        raise ValueError(
+            f"gmx dump exited {out.returncode} on {tpr_path}: "
+            f"{out.stderr.strip()[:200]}"
+        )
     return parse_net_charge(out.stdout)
 
 

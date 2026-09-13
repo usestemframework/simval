@@ -102,3 +102,80 @@ def test_charge_state_neutralized_lysozyme_passes():
     assert result.passed is True
     assert abs(result.detail["system_net_charge_e"]) < 1e-2
     assert result.detail["ions"]  # NA/CL present
+
+
+# --- PREP-001: net-charge parsing fails closed ---
+
+
+def test_moltype_without_charge_data_referenced_by_molblock_raises():
+    # A dump whose moltype header exists but whose charge data did not
+    # parse used to contribute 0.0 via moltype_q.get(..., 0.0) - reading
+    # as neutral. It must raise.
+    dump = (
+        "   molblock (0):\n"
+        '      moltype              = 0 "Protein"\n'
+        "      #molecules                     = 1\n"
+        "   moltype (0):\n"
+        "      (no atom lines parsed here)\n"
+    )
+    with pytest.raises(ValueError, match="charges did not parse"):
+        parse_net_charge(dump)
+
+
+def test_molblock_referencing_unparsed_moltype_raises():
+    # The molblock references moltype 1, which never appears as a header.
+    dump = (
+        "   molblock (0):\n"
+        '      moltype              = 1 "NA"\n'
+        "      #molecules                     = 4\n"
+        "   moltype (0):\n"
+        "      atom[ 0]={q= 1.0}\n"
+    )
+    with pytest.raises(ValueError, match="charges did not parse"):
+        parse_net_charge(dump)
+
+
+def test_zero_molblocks_raises():
+    dump = "   moltype (0):\n      atom[ 0]={q= 1.0}\n"
+    with pytest.raises(ValueError, match="no molblock parsed"):
+        parse_net_charge(dump)
+
+
+def test_legitimately_neutral_moltype_parses_to_zero():
+    # A parsed zero-sum moltype (e.g. water) is legitimate and must not
+    # be confused with a parse failure.
+    dump = (
+        "   molblock (0):\n"
+        '      moltype              = 0 "SOL"\n'
+        "      #molecules                     = 10\n"
+        "   moltype (0):\n"
+        "      atom[ 0]={q=-0.834}\n"
+        "      atom[ 1]={q= 0.417}\n"
+        "      atom[ 2]={q= 0.417}\n"
+    )
+    assert abs(parse_net_charge(dump)) < 1e-12
+
+
+def test_gmx_dump_nonzero_exit_with_partial_stdout_raises(monkeypatch, tmp_path):
+    # A failed gmx dump that still emitted partial stdout must fail the
+    # diagnostic, not parse the fragment.
+    import subprocess
+
+    from simval.diagnostics.prep import net_charge_from_tpr
+
+    class FakeCompleted:
+        returncode = 1
+        stdout = (
+            "   molblock (0):\n"
+            '      moltype              = 0 "Protein"\n'
+            "      #molecules                     = 1\n"
+            "   moltype (0):\n"
+            "      atom[ 0]={q= 1.0}\n"
+        )
+        stderr = "Fatal error in some late stage"
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: FakeCompleted()
+    )
+    with pytest.raises(ValueError, match="gmx dump exited 1"):
+        net_charge_from_tpr(tmp_path / "topol.tpr")
