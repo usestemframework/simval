@@ -57,10 +57,19 @@ def _load_manifest() -> dict[str, str]:
 
 
 def _verify_pinned(path: Path, d, name: str) -> None:
-    """A shipped golden loads only if its canonical content digest matches
-    the manifest pin. A name pinned in the manifest is verified wherever
-    the file lives (a same-named impostor must not ride the pin); an
-    unpinned name fails closed inside the references directory."""
+    """Content-pin enforcement (audit GOLD-002) + name/stem binding (GOLD-003).
+
+    A golden living in the references directory must be pinned and match
+    the manifest digest. A file elsewhere whose embedded name is pinned is
+    verified against that pin (a same-named impostor must not ride it);
+    an unpinned external file is loadable ONLY through the explicit
+    load_case_unpinned() escape hatch, never via get_case()."""
+    if name != path.stem:
+        raise ValueError(
+            f"reference case at {path}: embedded name {name!r} does not match the "
+            f"file stem {path.stem!r} — a byte-copied golden must not pose as "
+            "another case (audit GOLD-003)"
+        )
     pinned = _load_manifest().get(name)
     if pinned is None:
         if path.parent == _REFERENCES_DIR:
@@ -148,7 +157,9 @@ class ReferenceCase:
 
 def _load(path: Path) -> ReferenceCase:
     d = json.loads(path.read_text())
-    name = d["name"]
+    name = d.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"reference case at {path}: missing or invalid 'name'")
     _verify_pinned(path, d, name)
     ignore = d.get("ignore", [])
     if not isinstance(ignore, list) or not all(isinstance(m, str) for m in ignore):
@@ -185,10 +196,42 @@ def list_cases() -> list[str]:
 
 
 def get_case(name: str) -> ReferenceCase:
+    """Load a SHIPPED golden by its plain registered name (audit GOLD-003).
+
+    Only plain names resolve: path-like, absolute, and dot names are
+    rejected before any filesystem use, and the resolved path must stay
+    inside the references directory. External/custom references go through
+    load_case_unpinned(), which is explicit about its weaker guarantees."""
+    if (
+        not isinstance(name, str)
+        or name in ("", ".", "..")
+        or "/" in name
+        or "\\" in name
+        or Path(name).is_absolute()
+    ):
+        raise KeyError(
+            f"invalid reference case name {name!r}: get_case accepts only plain "
+            f"registered case names; available: {list_cases()}"
+        )
     path = _REFERENCES_DIR / f"{name}.json"
+    if path.resolve().parent != _REFERENCES_DIR.resolve():
+        raise KeyError(
+            f"reference case {name!r} resolves outside the references directory"
+        )
     if not path.exists():
         raise KeyError(f"unknown reference case: {name!r}; available: {list_cases()}")
     return _load(path)
+
+
+def load_case_unpinned(path) -> ReferenceCase:
+    """Load a reference JSON from an explicit path WITHOUT requiring it to
+    be a shipped, manifest-pinned golden (audit GOLD-003).
+
+    Test/tool escape hatch, clearly named: a file whose embedded name IS
+    pinned is still digest-verified (the impostor rule); only genuinely
+    unpinned external references load through this door. Verdict-bearing
+    code must use get_case()/load_all() instead."""
+    return _load(Path(path))
 
 
 def load_all() -> dict[str, ReferenceCase]:

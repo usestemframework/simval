@@ -37,10 +37,10 @@ def test_reference_version_gate_rejects_unsupported(tmp_path):
     d = json.loads(src.read_text())
     d["name"] = "future_version_probe"  # not a shipped reference: no manifest pin
     d["reference_version"] = "99.0.0"
-    path = tmp_path / "future.json"
+    path = tmp_path / "future_version_probe.json"
     path.write_text(json.dumps(d))
     with pytest.raises(ValueError, match="unsupported reference_version"):
-        cases_mod._load(path)
+        cases_mod.load_case_unpinned(path)
 
 
 def test_reference_version_gate_rejects_missing(tmp_path):
@@ -48,10 +48,10 @@ def test_reference_version_gate_rejects_missing(tmp_path):
     d = json.loads(src.read_text())
     d["name"] = "noversion_probe"  # not a shipped reference: no manifest pin
     del d["reference_version"]
-    path = tmp_path / "noversion.json"
+    path = tmp_path / "noversion_probe.json"
     path.write_text(json.dumps(d))
     with pytest.raises(ValueError, match="missing reference_version"):
-        cases_mod._load(path)
+        cases_mod.load_case_unpinned(path)
 
 
 def test_all_shipped_references_parse_under_version_gate():
@@ -183,10 +183,10 @@ def test_golden_without_identity_fails_closed(tmp_path):
     d = json.loads(src.read_text())
     d["name"] = "noidentity_probe"  # not a shipped reference: no manifest pin
     del d["identity"]
-    path = tmp_path / "noidentity.json"
+    path = tmp_path / "noidentity_probe.json"
     path.write_text(json.dumps(d))
     with pytest.raises(ValueError, match="no scenario 'identity'"):
-        cases_mod._load(path)
+        cases_mod.load_case_unpinned(path)
 
 
 def test_golden_with_malformed_identity_rejected(tmp_path):
@@ -194,16 +194,16 @@ def test_golden_with_malformed_identity_rejected(tmp_path):
     d = json.loads(src.read_text())
     d["name"] = "badhash_probe"  # not a shipped reference: no manifest pin
     d["identity"] = {"wave.json": "not-a-hash"}
-    path = tmp_path / "badhash.json"
+    path = tmp_path / "badhash_probe.json"
     path.write_text(json.dumps(d))
     with pytest.raises(ValueError, match="sha256"):
-        cases_mod._load(path)
+        cases_mod.load_case_unpinned(path)
     d["name"] = "empty_probe"
     d["identity"] = {}
-    path = tmp_path / "empty.json"
+    path = tmp_path / "empty_probe.json"
     path.write_text(json.dumps(d))
     with pytest.raises(ValueError, match="no scenario 'identity'"):
-        cases_mod._load(path)
+        cases_mod.load_case_unpinned(path)
 
 
 def test_validate_missing_declared_input_fails_closed(tmp_path):
@@ -343,3 +343,67 @@ def test_malformed_manifest_entry_fails_closed(tmp_path, monkeypatch):
 
 def test_manifest_not_listed_as_a_case():
     assert "MANIFEST" not in cases_mod.list_cases()
+
+
+# --- GOLD-003: get_case is a name registry, not a path loader ---
+
+
+def test_get_case_rejects_path_traversal_and_absolute_names():
+    refs = cases_mod._REFERENCES_DIR
+    for bad in (
+        "../wave_pulse_stable",
+        "references/../wave_pulse_stable",
+        "sub/wave_pulse_stable",
+        str(refs / "wave_pulse_stable.json"),
+        "/etc/passwd",
+        ".",
+        "..",
+        "",
+    ):
+        with pytest.raises(KeyError, match="plain registered case names|unknown reference case"):
+            cases_mod.get_case(bad)
+
+
+def test_byte_copied_golden_rejected_on_name_stem_mismatch(tmp_path):
+    # Byte-copy pinned case B to a file named like anything else: the
+    # embedded name no longer matches the stem, so the impostor must be
+    # rejected before any pin comparison could be confused.
+    src = cases_mod._REFERENCES_DIR / "fep_synthetic.json"
+    impostor = tmp_path / "impostor.json"
+    impostor.write_bytes(src.read_bytes())
+    with pytest.raises(ValueError, match="embedded name 'fep_synthetic'.*stem 'impostor'"):
+        cases_mod.load_case_unpinned(impostor)
+
+
+def test_byte_copied_golden_rejected_inside_references_dir(tmp_path, monkeypatch):
+    # Same byte-copy, but posed inside the references directory under a
+    # shipped case's name: get_case must refuse it on the name/stem rule.
+    import shutil
+
+    refs = tmp_path / "references"
+    refs.mkdir()
+    for p in sorted(cases_mod._REFERENCES_DIR.glob("*.json")):
+        shutil.copy(p, refs / p.name)
+    monkeypatch.setattr(cases_mod, "_REFERENCES_DIR", refs)
+    (refs / "wave_pulse_stable.json").write_bytes(
+        (refs / "fep_synthetic.json").read_bytes()
+    )
+    with pytest.raises(ValueError, match="embedded name 'fep_synthetic'"):
+        cases_mod.get_case("wave_pulse_stable")
+
+
+def test_get_case_loads_every_shipped_case():
+    for name in cases_mod.list_cases():
+        assert cases_mod.get_case(name).name == name
+
+
+def test_load_case_unpinned_verifies_pinned_impostor(tmp_path):
+    # An external file claiming a PINNED case name is still digest-checked:
+    # a content-modified impostor must not ride the shipped pin.
+    src = cases_mod._REFERENCES_DIR / "wave_pulse_stable.json"
+    d = json.loads(src.read_text())
+    d["reference_metrics"]["cfl"] = 0.9
+    impostor = tmp_path / "wave_pulse_stable.json"
+    impostor.write_text(json.dumps(d))
+    with pytest.raises(ValueError, match="does not match the pinned MANIFEST"):
+        cases_mod.load_case_unpinned(impostor)
