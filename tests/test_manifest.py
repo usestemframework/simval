@@ -527,3 +527,51 @@ def test_same_role_ambiguity_still_rejected(tmp_path):
         select_structure(run)
     with pytest.raises(ValueError, match="ambiguous"):
         select_trajectory_topology(run)
+
+
+# --- PROV-002: the tpr role is consumed regardless of optional extraction ---
+
+
+def ctx_paths(manifest):
+    from pathlib import Path
+
+    return [Path(k) for k in manifest["files"]]
+
+
+def test_tpr_consumed_when_atom_type_extraction_not_available(tmp_path, monkeypatch):
+    # The tpr used to enter consumed_inputs only when MDAnalysis atom-type
+    # extraction succeeded; in the typed not-available branch (unsupported
+    # TPR version -> []) the tpr was omitted while charge_state still
+    # consumed it via gmx dump. Provenance must register the role when it
+    # is SELECTED, not when the optional extraction wins.
+    pytest.importorskip("MDAnalysis")
+    datafiles = pytest.importorskip("MDAnalysisTests.datafiles")
+    import shutil
+
+    from simval import io
+    from simval.manifest import verify_manifest, write_manifest
+    from simval.pipeline import diagnose
+
+    run = tmp_path / "adk"
+    run.mkdir()
+    shutil.copy(datafiles.XTC, run / "traj.xtc")
+    shutil.copy(datafiles.GRO, run / "conf.gro")
+    (run / "topol.tpr").write_bytes(b"pretend tpr bytes")
+
+    monkeypatch.setattr(io, "load_atom_types", lambda *a, **k: [])  # typed not-available
+    from simval.diagnostics import prep as prep_mod
+
+    monkeypatch.setattr(prep_mod, "net_charge_from_tpr", lambda p: 0.0)  # working gmx dump
+
+    manifest = diagnose(run, selection="protein and name CA")
+    assert any(p.name == "topol.tpr" for p in ctx_paths(manifest))
+
+    charge = next(d for d in manifest["diagnostics"] if d["name"] == "charge_state")
+    assert charge["passed"] is True  # the gmx-dump path really consumed the tpr
+
+    out = run / "provenance.json"
+    write_manifest(manifest, out)
+    (run / "topol.tpr").write_bytes(b"tampered tpr bytes")
+    tampered = verify_manifest(out)
+    assert tampered["ok"] is False
+    assert any(entry.endswith("topol.tpr") for entry in tampered["tampered"])
