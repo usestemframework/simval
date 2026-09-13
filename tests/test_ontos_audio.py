@@ -203,3 +203,43 @@ def test_monopole_contact_without_collapse_record_rejected():
     ]
     with pytest.raises(ValueError, match="no preceding RegionCollapsed"):
         collect_excitations(records)
+
+
+# --- AUDIO-002: the strict parser enforces header + ContactParams invariants ---
+
+
+def test_non_128_world_header_rejected_by_parser_and_audio(tmp_path):
+    src = CONTACT_EXAMPLES / "contact" / "ontos.stream"
+    data = bytearray(src.read_bytes())
+    struct.pack_into("<I", data, 8, 129)
+    bad = tmp_path / "wide.stream"
+    bad.write_bytes(bytes(data))
+    with pytest.raises(ValueError, match="pins 128x128"):
+        parse_stream_v2(bad)
+    with pytest.raises(ValueError, match="pins 128x128"):
+        synthesize_stream(bad)
+
+
+def test_nan_restitution_rejected_by_parser_and_audio(tmp_path):
+    # The restitution corpus stream carries ContactParams as its first
+    # record (header 20 bytes: tag + restitution + friction + walls).
+    src = CONTACT_EXAMPLES / "restitution" / "ontos.stream"
+    data = bytearray(src.read_bytes())
+    assert data[20] == 0x0C
+    struct.pack_into("<d", data, 21, float("nan"))
+    bad = tmp_path / "nan.stream"
+    bad.write_bytes(bytes(data))
+    with pytest.raises(ValueError, match="restitution must be finite"):
+        parse_stream_v2(bad)
+    with pytest.raises(ValueError, match="restitution must be finite"):
+        synthesize_stream(bad)
+
+
+def test_out_of_range_friction_rejected_by_parser(tmp_path):
+    src = CONTACT_EXAMPLES / "restitution" / "ontos.stream"
+    data = bytearray(src.read_bytes())
+    struct.pack_into("<d", data, 29, -0.5)  # friction slot
+    bad = tmp_path / "negfriction.stream"
+    bad.write_bytes(bytes(data))
+    with pytest.raises(ValueError, match="friction finite"):
+        parse_stream_v2(bad)

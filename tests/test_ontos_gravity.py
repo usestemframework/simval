@@ -2035,11 +2035,14 @@ def _params_stream(tmp_path, restitution, friction, walls=0):
     ],
 )
 def test_nonfinite_contact_params_rejected_by_stream_verifier(tmp_path, restitution, friction):
+    # AUDIO-002 moved the ContactParams finiteness/range validation into
+    # the strict parser (parser-only consumers like audio needed it before
+    # synthesis), so the invalid stream now fails at parse time — still
+    # rejected by verify_stream_gravity, one layer earlier than the
+    # replay's redundant checks.
     p = _params_stream(tmp_path, restitution, friction)
-    summary = verify_stream_gravity(p, 11)
-    assert summary["mismatch_count"] > 0
-    assert any(m["field"] == "contact_params" for m in summary["mismatches"])
-    assert not check_reference_match_gravity(summary).passed
+    with pytest.raises(ValueError, match="restitution must be finite|friction finite"):
+        verify_stream_gravity(p, 11)
 
 
 def test_valid_contact_params_still_verify(tmp_path):

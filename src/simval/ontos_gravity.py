@@ -1626,6 +1626,14 @@ def parse_stream_v2(path):
     if version != 2:
         raise ValueError(f"not a gravity stream (version {version})")
     world_w, world_h, body_count = struct.unpack_from("<III", data, 8)
+    if world_w != 128 or world_h != 128:
+        # Spec-pinned invariant header (AUDIO-002, mirroring the producer's
+        # OTO-021): parser-only consumers (audio synthesis) get the same
+        # guarantee the verifier enforces, before any record is read.
+        raise ValueError(
+            f"invalid world dimensions {world_w}x{world_h} in stream header: "
+            "the spec pins 128x128"
+        )
     if body_count < 1:
         raise ValueError(f"invalid body_count {body_count} in stream header")
     records = []
@@ -1800,6 +1808,22 @@ def parse_stream_v2(path):
             offset += 17
             if vals[2] > 1:
                 raise ValueError(f"ContactParams walls byte {vals[2]} at offset {rec_off}: expected 0 or 1")
+            # Strict-parser validation (AUDIO-002; the replay re-checks
+            # redundantly): NaN comparisons are all False, so finiteness is
+            # required explicitly and range checks written positively.
+            # Parser-only consumers (audio) must reject invalid streams
+            # before synthesis, not after replay.
+            if not (
+                math.isfinite(vals[0])
+                and math.isfinite(vals[1])
+                and 0.0 <= vals[0] <= 1.0
+                and vals[1] >= 0.0
+            ):
+                raise ValueError(
+                    f"ContactParams at offset {rec_off}: restitution must be finite "
+                    f"in [0,1] and friction finite >= 0, got restitution={vals[0]!r} "
+                    f"friction={vals[1]!r}"
+                )
             pending_boundary = True
             records.append(("params", *vals))
         else:
