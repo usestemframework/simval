@@ -413,10 +413,6 @@ def compute_identity(run_dir) -> dict[str, str]:
     scenario-defining input, keyed by file name. Deliberately cheap — file
     selection and hashing only, no heavy engine imports — and computed the
     same way for golden generation and validation."""
-    from simval._util import (
-        find_unique,
-        select_trajectory_topology,
-    )
     from simval.context import select_engine
 
     run = Path(run_dir)
@@ -436,11 +432,16 @@ def compute_identity(run_dir) -> dict[str, str]:
         return {p.name: sha(p) for p in sorted(present, key=lambda p: p.name)}
 
     if engine == "gromacs":
-        return identity_of(
-            select_trajectory_topology(run),
-            find_unique(run, *("*.xtc", "*.dcd", "*.trr", "*.nc"), what="trajectory"),
-            find_unique(run, "*.xvg", what="energy file (xvg)"),
-        )
+        # ORA-005: identity covers the canonical scenario enumeration
+        # (every present role, not just the selected trajectory topology),
+        # and the methods.json force-field contract is enforced before
+        # any hashing/metrics.
+        from simval._util import gromacs_force_field_problem, gromacs_scenario_inputs
+
+        problem = gromacs_force_field_problem(run)
+        if problem:
+            raise ValueError(problem)
+        return identity_of(*gromacs_scenario_inputs(run))
     if engine in ("nbody-rebound",):
         return identity_of(run / "system.json")
     if engine == "wave-fdtd":

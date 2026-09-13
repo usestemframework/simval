@@ -72,3 +72,65 @@ def select_trajectory_topology(run: Path):
         if hit is not None:
             return hit
     return None
+
+
+def gromacs_scenario_inputs(run: Path) -> list[Path]:
+    """Every PRESENT GROMACS scenario role (audit ORA-005).
+
+    One canonical enumerator shared by provenance (consumed inputs) and
+    reference identity (the golden's scenario pin): structure, run
+    topology (.tpr), alternate topology, trajectory, energy xvg, mdp,
+    topology .top, params.json, methods.json — whichever are present.
+    Identity used to hash only the selected trajectory topology (so a
+    conf.gro hid topol.tpr) plus trajectory and xvg; .mdp/.top/
+    params.json/methods.json were omitted entirely. Role selection keeps
+    find_unique semantics: two candidates for one role are an error.
+    """
+    roles = [
+        select_structure(run),
+        select_run_topology(run),
+        select_alternate_topology(run),
+        find_unique(run, *TRAJECTORY_PATTERNS, what="trajectory"),
+        find_unique(run, "*.xvg", what="energy file (xvg)"),
+        find_unique(run, "mdout.mdp", "*.mdp", what="run parameters (mdp)"),
+        find_unique(run, "*.top", what="topology file (top)"),
+        run / "params.json",
+        run / "methods.json",
+    ]
+    return sorted(
+        {p for p in roles if p is not None and p.exists()}, key=lambda p: p.name
+    )
+
+
+def gromacs_force_field_problem(run: Path) -> str | None:
+    """Force-field contract vs methods metadata (audit ORA-005): when both
+    a methods.json and a topology .top are present, the declared force
+    field must agree with what the .top derives. None = no complaint
+    (nothing to cross-check, or they agree)."""
+    methods = run / "methods.json"
+    if not methods.exists():
+        return None
+    top = find_unique(run, "*.top", what="topology file (top)")
+    if top is None:
+        return None
+    import json
+
+    try:
+        declared = (json.loads(methods.read_text()) or {}).get("force_field")
+    except ValueError:
+        return f"methods.json is not valid JSON: {methods}"
+    if not declared:
+        return None
+    from simval.metadata import extract_force_field
+
+    derived = extract_force_field(top)
+    if derived:
+        # GROMACS include dirs carry a ".ff" suffix ("amber99sb-ildn.ff")
+        # that methods metadata drops ("amber99sb-ildn").
+        derived = derived[:-3] if derived.endswith(".ff") else derived
+    if derived and derived != declared:
+        return (
+            f"force-field contract violation: methods.json declares {declared!r} "
+            f"but the run topology {top.name} derives {derived!r}"
+        )
+    return None

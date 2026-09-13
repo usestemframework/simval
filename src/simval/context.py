@@ -129,6 +129,13 @@ class GromacsEngine(EngineAdapter):
         ctx.run_params["engine"] = "gromacs"
         ctx.run_params["selection"] = selection
 
+        # Provenance consumes the canonical scenario enumeration (audit
+        # ORA-005): every PRESENT role is hashed, regardless of whether an
+        # optional extraction over it later succeeded (audit PROV-002).
+        from simval._util import gromacs_scenario_inputs
+
+        ctx.consumed_inputs = gromacs_scenario_inputs(run)
+
         # MD inputs are ROLES, not mutually-exclusive alternatives: a normal
         # run-dir carries a structure (.gro/.pdb), a run topology (.tpr) and
         # a trajectory. Only multiple candidates for the SAME role are
@@ -138,7 +145,6 @@ class GromacsEngine(EngineAdapter):
         xtc = _find_unique(run, "*.xtc", "*.dcd", "*.trr", "*.nc", what="trajectory")
         ctx.trajectory_path = xtc
         if top and xtc:
-            ctx.consumed_inputs += [top, xtc]
             ctx.positions, ctx.reference, ctx.atom_names = io.load_trajectory(xtc, top, selection=selection)
             ctx.run_params["n_frames"] = int(ctx.positions.shape[0])
             ctx.run_params["n_selected_atoms"] = int(ctx.positions.shape[1])
@@ -171,7 +177,6 @@ class GromacsEngine(EngineAdapter):
                 ctx.system_atom_types = types or None
                 if ctx.system_atom_types:
                     ctx.run_params["n_system_atom_types"] = len(set(ctx.system_atom_types))
-                    ctx.consumed_inputs.append(ctx.tpr_path)
 
         ff_p = run / "ff_atom_types.txt"
         if ff_p.exists():
@@ -199,28 +204,21 @@ class GromacsEngine(EngineAdapter):
                 ctx.energy = arr
                 ctx.run_params["energy_term"] = term
                 ctx.run_params["n_energy_samples"] = int(ctx.energy.size)
-                ctx.consumed_inputs.append(xvg)
 
         params_path = run / "params.json"
         if params_path.exists():
             raw = json.loads(params_path.read_text())
             ctx.params = {k: Quantity(v["value"], v["unit"]) for k, v in raw.items()}
             ctx.run_params["params"] = raw
-            ctx.consumed_inputs.append(params_path)
 
         mdp = _find_unique(run, "mdout.mdp", "*.mdp", what="run parameters (mdp)")
         top_top = _find_unique(run, "*.top", what="topology file (top)")
-        if mdp is not None:
-            ctx.consumed_inputs.append(mdp)
-        if top_top is not None:
-            ctx.consumed_inputs.append(top_top)
         methods_file = run / "methods.json"
         if methods_file.exists():
             md = __import__("json").loads(methods_file.read_text())
             ctx.metadata = md
             ctx.run_params["force_field"] = md.get("force_field")
             ctx.run_params["water_model"] = md.get("water")
-            ctx.consumed_inputs.append(methods_file)
         else:
             meta = meta_mod.build_metadata(mdp, top_top, gmx_version=_gmx_version())
             ctx.metadata = meta
