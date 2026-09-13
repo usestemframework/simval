@@ -943,15 +943,21 @@ class GravityWorld:
         # once in pinned (i, j) id order and dispatches on membership —
         # a fine body resolving against an ephemeris-coarse contactant
         # is reachable whichever member carries the smaller id. Only
-        # (fine, fine), (fine, coarse), and — with the section 24
-        # record — (coarse, fine) pairs proceed; collapsed members
-        # never contact individually (their region contacts as a
-        # monopole), coarse-coarse pairs have no movable member, and
-        # without the record non-fine bodies never contact (section 21).
+        # (fine, fine) pairs proceed on contact mode alone; either
+        # static orientation — (fine, coarse) and (coarse, fine) —
+        # proceeds only with the section 24 record (without it
+        # non-fine bodies never contact, section 21). Collapsed
+        # members never contact individually (their region contacts
+        # as a monopole) and coarse-coarse pairs have no movable
+        # member.
         for i in range(n):
             for j in range(i + 1, n):
                 if frozen[j]:
-                    if frozen[i] or self.body_collapsed[j] is not None:
+                    if (
+                        frozen[i]
+                        or not extended
+                        or self.body_collapsed[j] is not None
+                    ):
                         continue
                 elif frozen[i] and not (extended and self.coarse[i] is not None):
                     continue

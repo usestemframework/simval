@@ -1739,6 +1739,59 @@ def test_static_contact_fires_when_coarse_body_has_smaller_id():
     assert same_fit(w.coarse[1], frozen_fit), "fit stays frozen"
 
 
+def test_bare_contacts_skip_fine_coarse_static_pairs():
+    # OTO-019 mirror (ontos bare_contacts_skip_fine_coarse_static_pairs):
+    # the coarsehit IC with bare --contacts (no tag 12 record) and an
+    # early demotion follows section 21 — a pair with a non-fine member
+    # is skipped in either id orientation, so the run is bit-identical
+    # to one with contacts off.
+    def run(contacts):
+        w = GravityWorld(11, 8, "coarsehit")
+        w.contacts = contacts
+        w.schedule(1, 3, 0)
+        records = 0
+        for _ in range(500):
+            w.step()
+            records += len(w.last_contacts)
+            w.last_contacts.clear()
+        return w, records
+
+    ctl, ctl_records = run(False)
+    bare, bare_records = run(True)
+    assert ctl_records == 0, "contacts off emits nothing"
+    assert bare_records == 0, "bare contacts emits no record in this IC"
+    for a, b in zip(ctl.bodies, bare.bodies):
+        assert struct.pack("<d", a["x"]) == struct.pack("<d", b["x"])
+        assert struct.pack("<d", a["y"]) == struct.pack("<d", b["y"])
+        assert struct.pack("<d", a["vx"]) == struct.pack("<d", b["vx"])
+        assert struct.pack("<d", a["vy"]) == struct.pack("<d", b["vy"])
+    assert not bare.touching, "no static pair enters the touching set"
+
+
+def test_zero_restitution_record_admits_static_contacts():
+    # OTO-019 mirror (ontos zero_restitution_record_admits_static_contacts):
+    # record presence, not value — an explicit --restitution 0 emits
+    # tag 12 with zeros and the fine x coarse static pairs fire,
+    # distinguishing record absence from zero-valued parameters.
+    w = GravityWorld(11, 8, "coarsehit")
+    w.contacts = True
+    w.contact_params = True
+    w.restitution = 0.0
+    w.schedule(1, 3, 0)
+    statics = 0
+    for _ in range(500):
+        w.step()
+        for c in w.last_contacts:
+            assert c["jn"] > 0.0
+            if c["b"] < len(w.bodies) and w.coarse[c["b"]] is not None:
+                statics += 1
+                assert abs(c["vn_after"]) < 1e-12, (
+                    f"e = 0 closure, vn_after {c['vn_after']}"
+                )
+        w.last_contacts.clear()
+    assert statics >= 4, f"expected fine x coarse static contacts, got {statics}"
+
+
 def test_test_ic_profiles_match_spec_ic_masses():
     from simval.ontos_gravity import initial_conditions, test_initial_conditions
 

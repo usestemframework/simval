@@ -4,7 +4,8 @@
 > (pre-rename; kept verbatim). The verification-oracle audit register — the
 > authoritative record of oracle-hardening findings against HEAD 7495370 —
 > is §F at the bottom of this file. Batch 2 (HEAD 0bdb2d3) is §G; batch 3
-> (HEAD 74e8ee6) is §H; batch 4 (HEAD f636c8c) is §I.
+> (HEAD 74e8ee6) is §H; batch 4 (HEAD f636c8c) is §I; batch 5 (HEAD 6ed8f28)
+> is §J.
 
 > Synthesis of five independent analysis passes: competitive positioning, technical architecture, risk/oversight hunt, Hive codebase audit, product/UX/scope.
 > Convergent findings (flagged by ≥2 passes) are high-confidence. The audit's own conclusion is in §D.
@@ -319,3 +320,27 @@ ontos examples (PASS, provenance byte-stable), and the complete CI
 cross-verification against the local ontos clone at aa305ee (23 distinct
 stream contracts incl. wallshot/coarsehit test-ICs + 3 modal-audio cases)
 — every stream and WAV bit-exact, zero mismatches.
+
+---
+
+## J. Verification-oracle audit register, batch 5 (2026-09-12)
+
+Findings verified against HEAD `6ed8f28` by an external review; implemented
+in the commit below. Same posture as §F–§I: simval is the trust anchor,
+every fix errs toward failing closed. This finding is the residual of the
+batch 4 ONT-016 mirror: the corrected semantics live in the ontos clone at
+`usestemframework/ontos` a0b59c4 (OTO-019 there, HEAD 1792cae), and the
+reference now tracks them. No committed corpus case exercises the ungated
+orientation with a bare-contacts stream, so no golden/corpus bytes changed
+— the emitter-reproduction tests pin this.
+
+| ID | Severity | Area | Finding | Status |
+|---|---|---|---|---|
+| ONT-019 | P0 | ontos_gravity._contact_pass | The ONT-016 sweep mirror admitted (fine i, coarse j) pairs unconditionally while gating only (coarse i, fine j) on the section 24 record — pre-ONT-016 both orientations required it. Sections 21/24 pin static real-body contact on ContactParams record presence regardless of id orientation, so the oracle would have blessed static contacts in a bare `--contacts` stream (no tag 12) whenever the coarse body carried the larger id | Fixed — the dispatch mirrors ontos a0b59c4 exactly: `(fine, fine)` unconditional, `(fine, coarse) \| (coarse, fine)` only with the record (`extended`). The mirrored coarsehit pair locks both halves: bare contacts + early demote is bit-identical to contacts off (zero records, zero static impulses, empty touching set, bit-equal body states), while an explicit `--restitution 0` — record present, zero-valued — fires the fine x coarse statics with e = 0 closure (the bare-contacts half fails on the ungated code; the corpus emitter-reproduction tests confirm no committed stream changed) |
+
+Verification: full pytest suite (452 passed, 4 skipped, 1 network test
+deselected; optional-engine deps installed), `simval diagnose` on all 20
+ontos examples (PASS, provenance byte-stable), and the complete CI
+cross-verification against the local ontos clone at 1792cae (25 stream
+contracts incl. wallshot/coarsehit test-ICs + 3 modal-audio cases) —
+every stream and WAV bit-exact, zero mismatches.
