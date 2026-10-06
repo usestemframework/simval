@@ -29,6 +29,9 @@ def test_cli_main_exit_code_and_output(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "PASS" in out
     assert "verdict: PASS" in out
+    assert "checks passed" in out
+    assert "[PASS]" in out
+    assert "provenance ->" in out
 
 
 def test_cli_main_failing_run_nonzero(tmp_path, capsys):
@@ -37,3 +40,7 @@ def test_cli_main_failing_run_nonzero(tmp_path, capsys):
     assert rc == 1
     out = capsys.readouterr().out
     assert "FAIL" in out
+    assert "verdict: FAIL" in out
+    # failing upper-bound checks show the exceed ratio
+    assert "exceeded" in out
+    assert "provenance ->" in out

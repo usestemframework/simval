@@ -46,7 +46,36 @@ def test_sweep(tmp_path, capsys):
     _wave_copy(root, "a")
     _wave_copy(root, "b")
     assert main(["sweep", str(root), "--selection", "n/a"]) == 0
-    assert "2 runs" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "2 runs" in out
+    assert "run" in out and "energy_growth" in out
+    assert set(out.splitlines()[2].strip()) == {"-"}  # rule under the table header
+
+
+def test_compare_cli(tmp_path, capsys):
+    root = tmp_path / "cmp"
+    root.mkdir()
+    a = _wave_copy(root, "a")
+    b = _wave_copy(root, "b")
+    assert main(["compare", str(a), str(b), "--selection", "n/a"]) == 0
+    out = capsys.readouterr().out
+    assert "metric" in out and "drel" in out
+    assert "cfl" in out
+
+
+def test_validate_identity_mismatch_shows_what_differs(tmp_path, capsys):
+    import json
+
+    run = _wave_copy(tmp_path, "tampered")
+    cfg = json.loads((run / "wave.json").read_text())
+    cfg["nx"] = 180
+    (run / "wave.json").write_text(json.dumps(cfg))
+    rc = main(["validate", str(run), "--case", "wave_pulse_stable", "--selection", "n/a"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "DRIFT" in out
+    assert "identity mismatch" in out
+    assert "wave.json" in out and "content mismatch" in out
 
 
 def test_bad_run_dir_is_clean_not_traceback(capsys):

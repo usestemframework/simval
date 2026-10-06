@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from simval import __version__
 from simval.pipeline import diagnose as run_diagnose
+from simval.report import (
+    fmt_dur,
+    render_check_row,
+    render_identity,
+    render_oracle_row,
+    rule_like,
+)
 
 
 def _safe(fn):
@@ -15,6 +23,25 @@ def _safe(fn):
     except (FileNotFoundError, ValueError) as e:
         print(f"simval: error: {e}")
         return None
+
+
+def _print_manifest_report(manifest, *, elapsed_s: float, provenance_path: Path | None = None):
+    """Verdict header + one aligned row per check + skipped checks.
+
+    Shared by `diagnose` and `run` so both report identically."""
+    diags = manifest["diagnostics"]
+    n_pass = sum(1 for d in diags if d["passed"])
+    print(
+        f"simval {__version__} | verdict: {manifest['verdict'].upper()} | "
+        f"{n_pass}/{len(diags)} checks passed | {fmt_dur(elapsed_s)}"
+    )
+    for d in diags:
+        print(render_check_row(d))
+    skipped = (manifest.get("params") or {}).get("skipped") or {}
+    for name in sorted(skipped):
+        print(f"  [SKIP] {str(name)[:24]:<24} {skipped[name]}")
+    if provenance_path is not None:
+        print(f"  provenance -> {provenance_path}")
 
 
 def main(argv=None) -> int:
@@ -97,16 +124,16 @@ def main(argv=None) -> int:
         if args.thresholds:
             import json
             overrides = json.loads(Path(args.thresholds).read_text())
+        start = time.perf_counter()
         manifest = _safe(lambda: run_diagnose(
             args.run_dir, out=args.out, selection=args.selection, thresholds=overrides))
         if manifest is None:
             return 1
-        verdict = manifest["verdict"]
-        print(f"simval {__version__} | verdict: {verdict.upper()} | {len(manifest['diagnostics'])} checks")
-        for r in manifest["diagnostics"]:
-            flag = "PASS" if r["passed"] else "FAIL"
-            print(f"  [{flag}] {r['name']:<24} value={r['value']:.4g} threshold={r['threshold']:.4g}")
-        return 0 if verdict == "pass" else 1
+        _print_manifest_report(
+            manifest, elapsed_s=time.perf_counter() - start,
+            provenance_path=Path(args.run_dir) / args.out,
+        )
+        return 0 if manifest["verdict"] == "pass" else 1
 
     if args.cmd == "inspect":
         from simval import service
@@ -140,23 +167,42 @@ def main(argv=None) -> int:
 
     if args.cmd == "compare":
         from simval.compare import compare_runs, largest_deltas
+        from simval.report import fmt_num
         comp = _safe(lambda: compare_runs(args.run_a, args.run_b, selection=args.selection))
         if comp is None:
             return 1
         print(f"simval {__version__} | compare {args.run_a}  vs  {args.run_b}")
-        for name, drel in largest_deltas(comp, n=8):
-            a = comp["deltas"][name]["a"]
-            b = comp["deltas"][name]["b"]
-            print(f"  {name:<24} A={a:.4g}  B={b:.4g}  drel={drel:.3g}")
+        ranked = largest_deltas(comp, n=8)
+        header = f"  {'metric':<24} {'A':>12} {'B':>12} {'drel':>10}"
+        print(header)
+        print(rule_like(header))
+        for name, drel in ranked:
+            d = comp["deltas"][name]
+            print(f"  {str(name)[:24]:<24} {fmt_num(d['a'], 12)} {fmt_num(d['b'], 12)} {fmt_num(drel, 10)}")
+        n_total = len(comp["deltas"])
+        if n_total > len(ranked):
+            print(f"  (top {len(ranked)} of {n_total} metrics by drel)")
         return 0
 
     if args.cmd == "sweep":
         from simval.sweep import KEY_METRICS, sweep
+        aliases = {
+            "mean_rmsd_nm": "rmsd_mean",
+            "final_rmsd_nm": "rmsd_final",
+            "mean_rg_nm": "rg_mean",
+            "energy_relative_range": "en_rel_range",
+            "angular_momentum_relative_range": "L_rel_range",
+        }
         out = sweep(args.folder, selection=args.selection, baseline=args.baseline)
-        print(f"simval {__version__} | sweep {args.folder} | {out['n']} runs")
+        n_err = sum(1 for r in out["runs"] if "_error" in r)
+        summary = f"simval {__version__} | sweep {args.folder} | {out['n']} runs"
+        if n_err:
+            summary += f" ({n_err} error)"
+        print(summary)
         keys = [k for k in KEY_METRICS if any(k in r for r in out["runs"])]
-        hdr = f"  {'run':<20} " + " ".join(f"{k[:14]:>14}" for k in keys)
+        hdr = f"  {'run':<20} " + " ".join(f"{aliases.get(k, k[:14]):>14}" for k in keys)
         print(hdr)
+        print(rule_like(hdr))
         base = out.get("baseline") or {}
         for r in out["runs"]:
             if "_error" in r:
@@ -173,21 +219,43 @@ def main(argv=None) -> int:
                 else:
                     cells.append(f"{v:>14.3g}")
             print(f"  {r['run']:<20} " + " ".join(cells))
+        if base:
+            print(f"  (deltas vs baseline {args.baseline})")
         return 0
 
     if args.cmd == "orchestrate":
         import json
 
-        from simval.orchestrate import load_grid, outliers, run_grid, tabulate
+        from simval.manifest import canonical_digest
+        from simval.orchestrate import load_grid, outliers, row_ok, run_grid, tabulate
         specs = _safe(lambda: load_grid(args.grid))
         if specs is None:
             return 1
+        print(f"simval {__version__} | orchestrate {args.grid} | {len(specs)} runs")
+
+        def _progress(row, i, total):
+            name = row.get("run", f"run-{i}")
+            if "_error" in row:
+                print(f"[{i + 1}/{total}] {name}: ERROR {row['_error']}")
+            elif row_ok(row):
+                print(
+                    f"[{i + 1}/{total}] {name}: ok "
+                    f"(mismatch=0 checks_failed=0 wall={row.get('wall_s', 0)}s)"
+                )
+            else:
+                print(
+                    f"[{i + 1}/{total}] {name}: FAIL "
+                    f"(mismatch={row.get('mismatch_count')} "
+                    f"checks_failed={row.get('checks_failed')})"
+                )
+
+        start = time.perf_counter()
         results = _safe(lambda: run_grid(
-            specs, ontos_bin=args.ontos_bin, cell_timeout_s=args.cell_timeout_s
+            specs, ontos_bin=args.ontos_bin, cell_timeout_s=args.cell_timeout_s,
+            progress=_progress,
         ))
         if results is None:
             return 1
-        print(f"simval {__version__} | orchestrate {args.grid} | {len(results)} runs")
         print(tabulate(results), end="")
         ol = outliers(results)
         if ol:
@@ -197,9 +265,14 @@ def main(argv=None) -> int:
                       f"median={o['median']:.3g} mad={o['mad']:.3g}")
         else:
             print("  outliers: none")
+        n_clean = sum(1 for r in results if row_ok(r))
+        n_err = sum(1 for r in results if "_error" in r)
+        verdict = "CLEAN" if n_clean == len(results) else "FAILED"
+        parts = [f"{n_clean}/{len(results)} runs clean"]
+        if n_err:
+            parts.append(f"{n_err} error")
+        print(f"  grid: {verdict} | {' | '.join(parts)} | elapsed {fmt_dur(time.perf_counter() - start)}")
         if args.out:
-            from simval.manifest import canonical_digest
-
             Path(args.out).write_text(
                 json.dumps(
                     {
@@ -215,10 +288,7 @@ def main(argv=None) -> int:
                 + "\n"
             )
             print(f"  results -> {args.out}")
-        clean = bool(results) and all(
-            "_error" not in r and r.get("mismatch_count", 1) == 0 and not r.get("checks_failed")
-            for r in results
-        )
+        clean = bool(results) and all(row_ok(r) for r in results)
         return 0 if clean else 1
 
     if args.cmd == "verify-manifest":
@@ -257,15 +327,15 @@ def main(argv=None) -> int:
         if out is None:
             return 1
         print(f"simval {__version__} | MD complete -> {out}")
+        start = time.perf_counter()
         manifest = _safe(lambda: run_diagnose(str(out), selection="protein and name CA"))
         if manifest is None:
             return 1
-        verdict = manifest["verdict"]
-        print(f"simval {__version__} | verdict: {verdict.upper()} | {len(manifest['diagnostics'])} checks")
-        for r in manifest["diagnostics"]:
-            flag = "PASS" if r["passed"] else "FAIL"
-            print(f"  [{flag}] {r['name']:<24} value={r['value']:.4g}")
-        return 0 if verdict == "pass" else 1
+        _print_manifest_report(
+            manifest, elapsed_s=time.perf_counter() - start,
+            provenance_path=Path(out) / "provenance.json",
+        )
+        return 0 if manifest["verdict"] == "pass" else 1
 
     if args.cmd == "afold":
         from simval.afold import check_plddt_profile, fetch_plddt
@@ -293,6 +363,7 @@ def main(argv=None) -> int:
 
     if args.cmd == "case-info":
         from simval.oracle import get_case
+        from simval.report import fmt_num, tol_str
         case = _safe(lambda: get_case(args.name))
         if case is None:
             return 1
@@ -300,8 +371,16 @@ def main(argv=None) -> int:
         print(f"  engine: {case.engine}  | ff: {case.force_field} | selection: {case.selection}")
         print(f"  description: {case.description}")
         print(f"  source: {case.source}")
-        print(f"  reference metrics: {case.reference_metrics}")
-        print(f"  tolerances: {case.tolerances or '(defaults)'}")
+        print("  reference metrics:")
+        for name in sorted(case.reference_metrics):
+            print(f"    {name:<28} {fmt_num(case.reference_metrics[name], 14)}")
+        print("  tolerances:")
+        if case.tolerances:
+            for name in sorted(case.tolerances):
+                spec = case.tolerances[name]
+                print(f"    {name:<28} {tol_str(spec[0], spec[1] if len(spec) > 1 else None)}")
+        else:
+            print("    (defaults)")
         return 0
 
     if args.cmd == "freesolv":
@@ -340,11 +419,13 @@ def main(argv=None) -> int:
         verdict = "MATCH" if result.passed else "DRIFT"
         print(f"simval {__version__} | oracle case={args.case} | {verdict} | "
               f"{result.detail['n_checked']} metrics, {result.detail['n_failed']} drifted")
+        if result.detail.get("error"):
+            print(f"  error: {result.detail['error']}")
+            if result.detail.get("identity"):
+                print("  identity:")
+                for line in render_identity(result.detail["identity"]):
+                    print(line)
         for name, m in result.detail["metrics"].items():
-            flag = "ok" if m["passed"] else "DRIFT"
-            cand = "-" if m["candidate"] is None else f"{m['candidate']:.4g}"
-            drel = "-" if m["delta_rel"] is None else f"{m['delta_rel']:.3g}"
-            print(f"  [{flag}] {name:<24} ref={m['reference']:.4g} cand={cand} "
-                  f"drel={drel} ({m['tol_kind']})")
+            print(render_oracle_row(name, m))
         return 0 if result.passed else 1
     return 0

@@ -46,6 +46,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from simval.report import rule_like
+
 GRAVITY_EVENT_LEVELS = {"demote-at": 0, "promote-at": 1, "expand-at": 1, "collapse-at": 2}
 LIFE_EVENTS = ("demote", "promote")
 
@@ -55,6 +57,35 @@ KEY_METRICS = [
     "post_expansion_deviation", "collapse_events", "expand_events",
     "contact_events", "checks_failed", "wall_s",
 ]
+
+# Display-only short names for the table header (full keys stay in the
+# result rows and the --out JSON, untouched).
+COLUMN_ALIASES = {
+    "ticks": "ticks",
+    "mismatch_count": "mismatch",
+    "max_position_deviation": "pos_dev",
+    "momentum_drift": "mom_drift",
+    "energy_drift": "en_drift",
+    "post_expansion_deviation": "postexp_dev",
+    "collapse_events": "collapse",
+    "expand_events": "expand",
+    "contact_events": "contact",
+    "checks_failed": "chk_fail",
+    "wall_s": "wall_s",
+}
+
+_RUN_W = 20
+_STATUS_W = 6
+_METRIC_W = 11
+
+
+def row_ok(row: dict) -> bool:
+    """The single clean-row predicate: no error, zero mismatches, zero
+    failed checks. A row that does not even report mismatch_count counts
+    as dirty (fails closed, like the CLI exit code always has)."""
+    mism = row.get("mismatch_count", 1)
+    chk = row.get("checks_failed") or 0
+    return "_error" not in row and mism == 0 and chk == 0
 
 DRIFT_METRICS = [
     "max_position_deviation", "momentum_drift", "energy_drift",
@@ -126,12 +157,17 @@ def validate_run_names(names: list[str]) -> None:
         seen.add(name)
 
 
-def run_grid(specs, *, ontos_bin=None, workdir=None, cell_timeout_s: float = 1800.0) -> list[dict]:
+def run_grid(
+    specs, *, ontos_bin=None, workdir=None, cell_timeout_s: float = 1800.0, progress=None
+) -> list[dict]:
     """Generate + verify every spec sequentially; one result row per run.
 
     cell_timeout_s bounds each ontos invocation (a hung producer must not
     hang the grid): on expiry the child is killed and the cell records an
     `_error` row; there are NO implicit retries (audit ORCH-004).
+
+    progress(row, index, total), when given, is called once per completed
+    row (display only — it can print, log, or be ignored).
     """
     import math
 
@@ -180,6 +216,8 @@ def run_grid(specs, *, ontos_bin=None, workdir=None, cell_timeout_s: float = 180
             except Exception as e:
                 row["_error"] = f"cell {i} ({names[i]}): {e}"[:200]
             rows.append(row)
+            if progress is not None:
+                progress(row, i, len(specs))
         return rows
     finally:
         if tmp is not None:
@@ -388,18 +426,34 @@ def verify_run(run_dir) -> dict:
 
 
 def tabulate(results) -> str:
-    """Render result rows as a sweep-style table (one string, newline-terminated)."""
+    """Render result rows as a sweep-style table (one string, newline-terminated).
+
+    Display only: a status column (ok / FAIL / ERROR) derived by row_ok,
+    short column aliases, and a dashed rule under the header. The rows
+    themselves (and the --out JSON) keep the full metric keys.
+    """
     keys = [k for k in KEY_METRICS if any(k in r for r in results)]
-    lines = [f"  {'run':<20} " + " ".join(f"{k[:14]:>14}" for k in keys)]
+
+    def col(k):
+        return COLUMN_ALIASES.get(k, k[:_METRIC_W])
+
+    header = (
+        f"  {'run':<{_RUN_W}} {'status':<{_STATUS_W}} "
+        + " ".join(f"{col(k):>{_METRIC_W}}" for k in keys)
+    ).rstrip()
+    lines = [header, rule_like(header)]
     for r in results:
         if "_error" in r:
-            lines.append(f"  {r['run']:<20}  ERROR: {r['_error']}")
+            lines.append(f"  {r['run']:<{_RUN_W}}  ERROR: {r['_error']}")
             continue
+        status = "ok" if row_ok(r) else "FAIL"
         cells = []
         for k in keys:
             v = r.get(k)
-            cells.append(f"{'-':>14}" if v is None else f"{v:>14.3g}")
-        lines.append(f"  {r['run']:<20} " + " ".join(cells))
+            cells.append("-".rjust(_METRIC_W) if v is None else f"{v:>{_METRIC_W}.3g}")
+        lines.append(
+            f"  {r['run']:<{_RUN_W}} {status:<{_STATUS_W}} " + " ".join(cells)
+        )
     return "\n".join(lines) + "\n"
 
 

@@ -10,7 +10,15 @@ from pathlib import Path
 import pytest
 
 from simval.cli import main
-from simval.orchestrate import load_grid, outliers, run_grid, tabulate, validate_run_names, verify_run
+from simval.orchestrate import (
+    load_grid,
+    outliers,
+    row_ok,
+    run_grid,
+    tabulate,
+    validate_run_names,
+    verify_run,
+)
 
 _ONTOS_CANDIDATES = (
     Path.home() / "Documents" / "Code Projects" / "Sides" / "ontos",
@@ -112,6 +120,10 @@ def test_cli_smoke(tmp_path, capsys):
     assert "orchestrate" in captured
     assert "all_fine" in captured and "window" in captured
     assert "outliers" in captured
+    # per-run progress + final grid verdict summary
+    assert "[1/2] all_fine: ok" in captured
+    assert "grid: CLEAN | 2/2 runs clean" in captured
+    assert "results ->" in captured
     saved = json.loads(out.read_text())
     assert len(saved["runs"]) == 2
     assert all(r["mismatch_count"] == 0 for r in saved["runs"])
@@ -135,10 +147,50 @@ def test_tabulate_renders_rows_and_missing_metrics():
         {"run": "c", "_error": "boom"},
     ])
     lines = table.splitlines()
-    assert "a" in lines[1] and "1e-05" in lines[1]
-    assert "-" in lines[2].split()
-    assert "ERROR: boom" in lines[3]
+    # header: status column + short aliases, rule underneath
+    assert "status" in lines[0] and "pos_dev" in lines[0] and "mismatch" in lines[0]
+    assert set(lines[1].strip()) == {"-"}
+    assert "a" in lines[2] and "1e-05" in lines[2] and " ok" in lines[2]
+    assert "-" in lines[3].split()
+    assert "ERROR: boom" in lines[4]
     assert table.endswith("\n")
+
+
+def test_tabulate_flags_dirty_rows():
+    table = tabulate([
+        _gravity_row("clean"),
+        _gravity_row("mismatched", mismatch_count=3),
+        _gravity_row("checks", checks_failed=2),
+    ])
+    lines = table.splitlines()
+    assert "ok" in lines[2].split()
+    assert "FAIL" in lines[3].split()
+    assert "FAIL" in lines[4].split()
+
+
+def test_row_ok_matches_exit_criterion():
+    # the exact predicate the CLI exit code has always used
+    assert row_ok(_gravity_row("a"))
+    assert not row_ok(_gravity_row("m", mismatch_count=1))
+    assert not row_ok(_gravity_row("c", checks_failed=1))
+    assert not row_ok({"run": "e", "_error": "boom"})
+    assert not row_ok({"run": "x"})  # missing mismatch_count fails closed
+
+
+def test_run_grid_reports_progress_per_row(tmp_path):
+    fake = _write_fake_ontos(tmp_path / "fake-ontos")
+    specs = [
+        {"name": "ok_a", "mode": "gravity", "ticks": 10, "seed": 42, "bodies": 8},
+        {"name": "bad", "mode": "nonsense"},
+        {"name": "ok_b", "mode": "gravity", "ticks": 10, "seed": 7, "bodies": 8},
+    ]
+    seen = []
+    results = run_grid(
+        specs, ontos_bin=fake, workdir=tmp_path / "grid",
+        progress=lambda row, i, total: seen.append((i, total, row["run"])),
+    )
+    assert seen == [(0, 3, "ok_a"), (1, 3, "bad"), (2, 3, "ok_b")]
+    assert "_error" in results[1]
 
 
 def test_outliers_flags_mad_deviation():
@@ -288,6 +340,20 @@ def test_cli_empty_grid_exits_nonzero(tmp_path, capsys):
     assert rc == 1
     out = capsys.readouterr().out + capsys.readouterr().err
     assert "no run specs" in out
+
+
+def test_cli_dirty_grid_reports_failure_summary(tmp_path, capsys):
+    fake = _write_fake_ontos(tmp_path / "fake-ontos")
+    grid = tmp_path / "grid.json"
+    grid.write_text(json.dumps([
+        {"name": "good", "mode": "gravity", "ticks": 10, "seed": 42, "bodies": 8},
+        {"name": "badmode", "mode": "nonsense"},
+    ]))
+    rc = main(["orchestrate", "--grid", str(grid), "--ontos-bin", str(fake)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "[2/2] badmode: ERROR" in out
+    assert "grid: FAILED | 1/2 runs clean | 1 error" in out
 
 
 def test_cli_success_requires_rows(tmp_path, capsys):
