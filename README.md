@@ -1,5 +1,7 @@
 # simval
 
+Project status: simval is a deterministic verification oracle for computational-physics simulations and is a work in progress.
+
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Python](https://img.shields.io/badge/Python-3.11+-3776AB) ![Status](https://img.shields.io/badge/status-pre--alpha-red)
 
 Deterministic verification + a reference-oracle for computational physics simulations. Local-first, LLM-free core. The moat is the unsexy layer — packaged, consistent diagnostics + provenance + a validation oracle that an AI agent (or human) loops against to know whether a simulation's output is correct.
